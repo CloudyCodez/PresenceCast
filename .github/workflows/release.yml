@@ -36,7 +36,9 @@ jobs:
           }
           @"
           {
-            "client_id": "$env:PRESENCECAST_CLIENT_ID"
+            "client_id": "$env:PRESENCECAST_CLIENT_ID",
+            "large_image_key": "chibi_cloud",
+            "large_image_text": "PresenceCast by Cloud"
           }
           "@ | Set-Content -LiteralPath "config.json" -Encoding utf8
 

@@ -11,7 +11,11 @@ from pypresence import ActivityType, Presence
 from pypresence.types import StatusDisplayType
 
 
-DEFAULT_CONFIG = {"client_id": ""}
+DEFAULT_CONFIG = {
+    "client_id": "",
+    "large_image_key": "chibi_cloud",
+    "large_image_text": "PresenceCast by Cloud",
+}
 APP_NAME = "PresenceCast"
 TOOL_LABEL = "Cloud's RPC Tool"
 
@@ -119,7 +123,10 @@ class PresenceApp:
 
         self.rpc: Presence | None = None
         self.connected_client_id: str | None = None
-        self.client_id = self._load_client_id()
+        self.config = self._load_config()
+        self.client_id = str(self.config.get("client_id", "")).strip()
+        self.large_image_key = str(self.config.get("large_image_key", DEFAULT_CONFIG["large_image_key"])).strip()
+        self.large_image_text = str(self.config.get("large_image_text", DEFAULT_CONFIG["large_image_text"])).strip()
 
         self.logo_photo: tk.PhotoImage | None = None
         self.small_logo_photo: tk.PhotoImage | None = None
@@ -599,17 +606,23 @@ class PresenceApp:
     def _on_mousewheel(self, event: tk.Event) -> None:
         self.content_canvas.yview_scroll(int(-event.delta / 120), "units")
 
-    def _load_client_id(self) -> str:
+    def _load_config(self) -> dict[str, str]:
         for path in (CONFIG_PATH, BUNDLED_CONFIG_PATH):
             if not path.exists():
                 continue
             try:
                 with path.open("r", encoding="utf-8") as file:
                     data = json.load(file)
-                return str(data.get("client_id", "")).strip()
+                if isinstance(data, dict):
+                    return {
+                        "client_id": str(data.get("client_id", DEFAULT_CONFIG["client_id"])).strip(),
+                        "large_image_key": str(data.get("large_image_key", DEFAULT_CONFIG["large_image_key"])).strip(),
+                        "large_image_text": str(data.get("large_image_text", DEFAULT_CONFIG["large_image_text"])).strip(),
+                    }
             except (OSError, json.JSONDecodeError):
                 continue
-        return DEFAULT_CONFIG["client_id"]
+
+        return DEFAULT_CONFIG.copy()
 
     def _ensure_connection(self) -> None:
         if self.rpc is not None and self.connected_client_id == self.client_id:
@@ -669,6 +682,8 @@ class PresenceApp:
                 activity_type=activity_type,
                 status_display_type=display_mode,
                 start=start_time,
+                large_image=self.large_image_key or None,
+                large_text=self.large_image_text[:128] if self.large_image_key and self.large_image_text else None,
             )
             self._flash_status(PALETTE["mint"], f'Casting "{activity_name[:44]}".')
             self._update_preview()

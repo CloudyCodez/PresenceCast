@@ -22,9 +22,12 @@ PresenceCast is a Windows desktop utility for shaping Discord Rich Presence with
 1. Open the Discord Developer Portal.
 2. Create a new application.
 3. Copy the numeric **Application ID**.
-4. Copy `config.example.json` to `config.json` if needed.
-5. Put your Application ID into `config.json`.
-6. Launch Discord desktop.
+4. In that Discord application, upload `chibi-cloud-watermark.png` as a Rich Presence asset with the key `chibi_cloud`.
+5. Copy `config.example.json` to `config.json` if needed.
+6. Put your Application ID into `config.json`.
+7. Launch Discord desktop.
+
+PresenceCast now sends `large_image=chibi_cloud` by default, so the Discord activity card will use the mascot once that asset exists on the Discord application.
 
 ## Run From Source
 
@@ -48,6 +51,7 @@ This repo includes a GitHub Actions workflow at `.github/workflows/release.yml`.
 - The workflow uploads `PresenceCast.exe`
 - Tagged builds are published to GitHub Releases automatically
 - Release builds can inject a Discord Application ID from the GitHub secret `PRESENCECAST_CLIENT_ID`
+- Release builds also inject the default mascot asset key `chibi_cloud`
 - Keep the public repo blank in `config.json`; let releases provide the ready-to-run config
 
 ## Notes
