@@ -25,7 +25,7 @@ if ($clientId) {
 
 & $python -m pip install -r requirements.txt
 & $python generate_icon.py
-& $python -m PyInstaller --noconfirm --onefile --windowed --add-data "config.json;." --add-data "presencecast.ico;." --add-data "presencecast.png;." --icon presencecast.ico --name PresenceCast app.py
+& $python -m PyInstaller --noconfirm --onefile --windowed --add-data "config.json;." --add-data "presencecast.ico;." --add-data "presencecast.png;." --add-data "chibi-cloud-watermark.png;." --icon presencecast.ico --name PresenceCast app.py
 
 Write-Host ""
 Write-Host "Build complete:"

@@ -106,6 +106,7 @@ CONFIG_PATH = APP_DIR / "config.json"
 BUNDLED_CONFIG_PATH = BUNDLE_DIR / "config.json"
 ICON_PATH = pick_path("presencecast.ico")
 LOGO_PATH = pick_path("presencecast.png")
+MASCOT_PATH = pick_path("chibi-cloud-watermark.png")
 
 
 class PresenceApp:
@@ -122,6 +123,7 @@ class PresenceApp:
 
         self.logo_photo: tk.PhotoImage | None = None
         self.small_logo_photo: tk.PhotoImage | None = None
+        self.mascot_photo: tk.PhotoImage | None = None
 
         self.name_var = tk.StringVar()
         self.details_var = tk.StringVar()
@@ -263,6 +265,26 @@ class PresenceApp:
         right = tk.Frame(self.header, bg=PALETTE["header"])
         right.pack(side="right", padx=22, pady=24)
 
+        if MASCOT_PATH.exists():
+            try:
+                mascot = tk.PhotoImage(file=str(MASCOT_PATH))
+                factor = max(1, math.ceil(max(mascot.width() / 132, mascot.height() / 92)))
+                self.mascot_photo = mascot.subsample(factor, factor)
+            except Exception:
+                self.mascot_photo = None
+
+        if self.mascot_photo is not None:
+            mascot_frame = tk.Frame(
+                right,
+                bg=PALETTE["surface"],
+                highlightbackground=PALETTE["border"],
+                highlightthickness=1,
+                padx=10,
+                pady=10,
+            )
+            mascot_frame.pack(anchor="e")
+            tk.Label(mascot_frame, image=self.mascot_photo, bg=PALETTE["surface"]).pack(anchor="e")
+
         tk.Label(
             right,
             text="RPC",
@@ -271,7 +293,7 @@ class PresenceApp:
             bg=PALETTE["amber"],
             padx=12,
             pady=7,
-        ).pack(anchor="e")
+        ).pack(anchor="e", pady=(10, 0))
 
     def _build_scroll_content(self) -> None:
         self.templates_shell = tk.Frame(self.content, bg=PALETTE["window"])

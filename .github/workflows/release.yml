@@ -46,7 +46,7 @@ jobs:
 
       - name: Build Executable
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --onefile --windowed --add-data "config.json;." --add-data "presencecast.ico;." --add-data "presencecast.png;." --icon presencecast.ico --name PresenceCast app.py
+        run: python -m PyInstaller --noconfirm --onefile --windowed --add-data "config.json;." --add-data "presencecast.ico;." --add-data "presencecast.png;." --add-data "chibi-cloud-watermark.png;." --icon presencecast.ico --name PresenceCast app.py
 
       - name: Upload Workflow Artifact
         uses: actions/upload-artifact@v4
