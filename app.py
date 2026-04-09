@@ -417,6 +417,15 @@ class PresenceApp:
         self.links_panel.pack(fill="x", padx=22, pady=(0, 14))
 
         self._subtle_heading(self.links_panel, "Optional Buttons").pack(anchor="w", pady=(0, 10))
+        tk.Label(
+            self.links_panel,
+            text="Discord may only show custom buttons on supported activity surfaces.",
+            font=("Segoe UI", 9),
+            fg=PALETTE["soft"],
+            bg=PALETTE["panel"],
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
         self.primary_button_label_entry = self._add_compact_field(
             self.links_panel, "Primary label", self.primary_button_label_var, "Project"
         )
@@ -438,6 +447,56 @@ class PresenceApp:
         self.details_count.pack(side="left", padx=(16, 0))
         self.state_count = self._metric_label(self.metrics_row, "State: 0 / 128")
         self.state_count.pack(side="left", padx=(16, 0))
+
+        self.profiles_panel = self._make_panel(self.left_column)
+        self.profiles_panel.pack(fill="x", pady=(16, 0))
+        self._section_heading(self.profiles_panel, "Saved Profiles").pack(anchor="w", padx=18, pady=(18, 6))
+
+        self.profile_menu = tk.OptionMenu(self.profiles_panel, self.profile_var, "")
+        self.profile_menu.configure(
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel_soft"],
+            activeforeground=PALETTE["window"],
+            activebackground=PALETTE["blue"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            anchor="w",
+            padx=10,
+        )
+        self.profile_menu["menu"].configure(
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel_soft"],
+            activeforeground=PALETTE["window"],
+            activebackground=PALETTE["blue"],
+            bd=0,
+        )
+        self.profile_menu.pack(fill="x", padx=18, pady=(4, 10))
+
+        self.profile_name_entry = self._add_compact_field(
+            self.profiles_panel, "Profile name", self.profile_name_var, "After-hours grind"
+        )
+        self.profile_name_entry.pack_configure(padx=18, pady=(0, 12))
+
+        self.profile_button_row = tk.Frame(self.profiles_panel, bg=PALETTE["panel"])
+        self.profile_button_row.pack(fill="x", padx=18, pady=(0, 18))
+
+        self.save_profile_button = self._action_button(
+            self.profile_button_row, "Save", self.save_profile, PALETTE["amber"], PALETTE["window"]
+        )
+        self.save_profile_button.pack(side="left")
+
+        self.load_profile_button = self._action_button(
+            self.profile_button_row, "Load", self.load_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
+        )
+        self.load_profile_button.pack(side="left", padx=(10, 0))
+
+        self.delete_profile_button = self._action_button(
+            self.profile_button_row, "Delete", self.delete_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
+        )
+        self.delete_profile_button.pack(side="left", padx=(10, 0))
 
         self.side_panel = self._make_panel(self.right_column)
         self.side_panel.pack(fill="x")
@@ -602,56 +661,6 @@ class PresenceApp:
             justify="left",
         )
         self.status_chip.pack(anchor="w", padx=18, pady=(0, 18))
-
-        self.profiles_panel = self._make_panel(self.right_column)
-        self.profiles_panel.pack(fill="x", pady=(16, 0))
-        self._section_heading(self.profiles_panel, "Saved Profiles").pack(anchor="w", padx=18, pady=(18, 6))
-
-        self.profile_menu = tk.OptionMenu(self.profiles_panel, self.profile_var, "")
-        self.profile_menu.configure(
-            font=("Segoe UI", 10),
-            fg=PALETTE["text"],
-            bg=PALETTE["panel_soft"],
-            activeforeground=PALETTE["window"],
-            activebackground=PALETTE["blue"],
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            anchor="w",
-            padx=10,
-        )
-        self.profile_menu["menu"].configure(
-            font=("Segoe UI", 10),
-            fg=PALETTE["text"],
-            bg=PALETTE["panel_soft"],
-            activeforeground=PALETTE["window"],
-            activebackground=PALETTE["blue"],
-            bd=0,
-        )
-        self.profile_menu.pack(fill="x", padx=18, pady=(4, 10))
-
-        self.profile_name_entry = self._add_compact_field(
-            self.profiles_panel, "Profile name", self.profile_name_var, "After-hours grind"
-        )
-        self.profile_name_entry.pack_configure(padx=18, pady=(0, 12))
-
-        self.profile_button_row = tk.Frame(self.profiles_panel, bg=PALETTE["panel"])
-        self.profile_button_row.pack(fill="x", padx=18, pady=(0, 18))
-
-        self.save_profile_button = self._action_button(
-            self.profile_button_row, "Save", self.save_profile, PALETTE["amber"], PALETTE["window"]
-        )
-        self.save_profile_button.pack(side="left")
-
-        self.load_profile_button = self._action_button(
-            self.profile_button_row, "Load", self.load_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
-        )
-        self.load_profile_button.pack(side="left", padx=(10, 0))
-
-        self.delete_profile_button = self._action_button(
-            self.profile_button_row, "Delete", self.delete_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
-        )
-        self.delete_profile_button.pack(side="left", padx=(10, 0))
 
     def _make_panel(self, parent: tk.Widget) -> tk.Frame:
         return tk.Frame(parent, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
