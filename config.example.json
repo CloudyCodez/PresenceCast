@@ -1,5 +1,16 @@
 {
   "client_id": "YOUR_DISCORD_APPLICATION_ID",
   "large_image_key": "chibi_cloud",
-  "large_image_text": "PresenceCast by Cloud"
+  "large_image_text": "PresenceCast by Cloud",
+  "small_image_key": "chibi_cloud",
+  "small_image_text": "PresenceCast by Cloud",
+  "playing_image_key": "chibi_cloud_playing",
+  "playing_image_text": "PresenceCast | Playing",
+  "listening_image_key": "chibi_cloud_listening",
+  "listening_image_text": "PresenceCast | Listening",
+  "watching_image_key": "chibi_cloud_watching",
+  "watching_image_text": "PresenceCast | Watching",
+  "competing_image_key": "",
+  "competing_image_text": "PresenceCast | Competing",
+  "emoji_asset_override": true
 }

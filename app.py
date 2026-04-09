@@ -15,6 +15,17 @@ DEFAULT_CONFIG = {
     "client_id": "",
     "large_image_key": "chibi_cloud",
     "large_image_text": "PresenceCast by Cloud",
+    "small_image_key": "chibi_cloud",
+    "small_image_text": "PresenceCast by Cloud",
+    "playing_image_key": "chibi_cloud_playing",
+    "playing_image_text": "PresenceCast | Playing",
+    "listening_image_key": "chibi_cloud_listening",
+    "listening_image_text": "PresenceCast | Listening",
+    "watching_image_key": "chibi_cloud_watching",
+    "watching_image_text": "PresenceCast | Watching",
+    "competing_image_key": "",
+    "competing_image_text": "PresenceCast | Competing",
+    "emoji_asset_override": True,
 }
 APP_NAME = "PresenceCast"
 TOOL_LABEL = "Cloud's RPC Tool"
@@ -49,6 +60,19 @@ ACTIVITY_TYPE_OPTIONS = {
     "Listening": ActivityType.LISTENING,
     "Watching": ActivityType.WATCHING,
     "Competing": ActivityType.COMPETING,
+}
+
+ACTIVITY_ASSET_FIELDS = {
+    "Playing": ("playing_image_key", "playing_image_text"),
+    "Listening": ("listening_image_key", "listening_image_text"),
+    "Watching": ("watching_image_key", "watching_image_text"),
+    "Competing": ("competing_image_key", "competing_image_text"),
+}
+
+EMOJI_ASSET_HINTS = {
+    "Playing": ("🎮", "🕹️", "👾", "⚔️", "🏆"),
+    "Listening": ("🎧", "🎵", "🎶", "🎼", "🎤"),
+    "Watching": ("📺", "🎬", "🍿", "👀", "📹"),
 }
 
 PRESETS = [
@@ -97,6 +121,7 @@ def get_runtime_dirs() -> tuple[Path, Path]:
 
 
 APP_DIR, BUNDLE_DIR = get_runtime_dirs()
+PROFILES_PATH = APP_DIR / "profiles.json"
 
 
 def pick_path(filename: str) -> Path:
@@ -110,7 +135,12 @@ CONFIG_PATH = APP_DIR / "config.json"
 BUNDLED_CONFIG_PATH = BUNDLE_DIR / "config.json"
 ICON_PATH = pick_path("presencecast.ico")
 LOGO_PATH = pick_path("presencecast.png")
-MASCOT_PATH = pick_path("chibi-cloud-watermark.png")
+MASCOT_PATH = pick_path("chibi_cloud.png")
+ACTIVITY_PREVIEW_PATHS = {
+    "Playing": pick_path("Chibi Cloud Playing.png"),
+    "Listening": pick_path("Chibi Cloud Listening.png"),
+    "Watching": pick_path("Chibi Cloud Watching.png"),
+}
 
 
 class PresenceApp:
@@ -127,18 +157,39 @@ class PresenceApp:
         self.client_id = str(self.config.get("client_id", "")).strip()
         self.large_image_key = str(self.config.get("large_image_key", DEFAULT_CONFIG["large_image_key"])).strip()
         self.large_image_text = str(self.config.get("large_image_text", DEFAULT_CONFIG["large_image_text"])).strip()
+        self.small_image_key = str(self.config.get("small_image_key", DEFAULT_CONFIG["small_image_key"])).strip()
+        self.small_image_text = str(self.config.get("small_image_text", DEFAULT_CONFIG["small_image_text"])).strip()
+        self.activity_image_keys = {
+            label: str(self.config.get(key_field, DEFAULT_CONFIG[key_field])).strip()
+            for label, (key_field, _text_field) in ACTIVITY_ASSET_FIELDS.items()
+        }
+        self.activity_image_texts = {
+            label: str(self.config.get(text_field, DEFAULT_CONFIG[text_field])).strip()
+            for label, (_key_field, text_field) in ACTIVITY_ASSET_FIELDS.items()
+        }
 
         self.logo_photo: tk.PhotoImage | None = None
         self.small_logo_photo: tk.PhotoImage | None = None
         self.mascot_photo: tk.PhotoImage | None = None
+        self.preview_asset_photo: tk.PhotoImage | None = None
 
+        self.profiles = self._load_profiles()
         self.name_var = tk.StringVar()
         self.details_var = tk.StringVar()
         self.state_var = tk.StringVar()
+        self.primary_button_label_var = tk.StringVar()
+        self.primary_button_url_var = tk.StringVar()
+        self.secondary_button_label_var = tk.StringVar()
+        self.secondary_button_url_var = tk.StringVar()
+        self.profile_name_var = tk.StringVar()
+        self.profile_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready to cast your activity into Discord.")
         self.display_mode_var = tk.StringVar(value="Show activity name")
         self.activity_type_var = tk.StringVar(value="Playing")
         self.timer_enabled_var = tk.BooleanVar(value=True)
+        self.emoji_asset_override_var = tk.BooleanVar(
+            value=bool(self.config.get("emoji_asset_override", DEFAULT_CONFIG["emoji_asset_override"]))
+        )
 
         self.animation_phase = 0.0
         self.status_after_id: str | None = None
@@ -220,10 +271,16 @@ class PresenceApp:
         self.name_var.trace_add("write", self._update_counts)
         self.details_var.trace_add("write", self._update_counts)
         self.state_var.trace_add("write", self._update_counts)
+        self.primary_button_label_var.trace_add("write", self._update_preview)
+        self.primary_button_url_var.trace_add("write", self._update_preview)
+        self.secondary_button_label_var.trace_add("write", self._update_preview)
+        self.secondary_button_url_var.trace_add("write", self._update_preview)
         self.display_mode_var.trace_add("write", self._update_preview)
         self.activity_type_var.trace_add("write", self._update_preview)
+        self.emoji_asset_override_var.trace_add("write", self._update_preview)
 
         self.name_entry.focus_set()
+        self._refresh_profile_menu()
         self._update_counts()
         self._update_preview()
 
@@ -356,6 +413,23 @@ class PresenceApp:
         for entry in (self.name_entry, self.details_entry, self.state_entry):
             entry.bind("<Return>", lambda _event: self.generate_presence())
 
+        self.links_panel = tk.Frame(self.composer_panel, bg=PALETTE["panel"])
+        self.links_panel.pack(fill="x", padx=22, pady=(0, 14))
+
+        self._subtle_heading(self.links_panel, "Optional Buttons").pack(anchor="w", pady=(0, 10))
+        self.primary_button_label_entry = self._add_compact_field(
+            self.links_panel, "Primary label", self.primary_button_label_var, "Project"
+        )
+        self.primary_button_url_entry = self._add_compact_field(
+            self.links_panel, "Primary URL", self.primary_button_url_var, "https://example.com"
+        )
+        self.secondary_button_label_entry = self._add_compact_field(
+            self.links_panel, "Secondary label", self.secondary_button_label_var, "Discord"
+        )
+        self.secondary_button_url_entry = self._add_compact_field(
+            self.links_panel, "Secondary URL", self.secondary_button_url_var, "https://discord.gg/..."
+        )
+
         self.metrics_row = tk.Frame(self.composer_panel, bg=PALETTE["panel"])
         self.metrics_row.pack(fill="x", padx=22, pady=(0, 18))
         self.name_count = self._metric_label(self.metrics_row, "Activity name: 0 / 128")
@@ -371,6 +445,29 @@ class PresenceApp:
 
         self.preview_card = tk.Frame(self.side_panel, bg=PALETTE["input"])
         self.preview_card.pack(fill="x", padx=18, pady=(2, 16))
+
+        self.preview_visual_row = tk.Frame(self.preview_card, bg=PALETTE["input"])
+        self.preview_visual_row.pack(fill="x", padx=14, pady=(14, 0))
+
+        self.preview_art_frame = tk.Frame(
+            self.preview_visual_row,
+            bg=PALETTE["panel_soft"],
+            width=74,
+            height=74,
+            highlightbackground=PALETTE["border"],
+            highlightthickness=1,
+        )
+        self.preview_art_frame.pack(side="left")
+        self.preview_art_frame.pack_propagate(False)
+
+        self.preview_art_label = tk.Label(
+            self.preview_art_frame,
+            text="Art",
+            font=("Segoe UI Semibold", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_soft"],
+        )
+        self.preview_art_label.pack(expand=True)
 
         self.preview_name = tk.Label(
             self.preview_card,
@@ -402,6 +499,17 @@ class PresenceApp:
         )
         self.preview_state.pack(fill="x", padx=14, pady=(4, 14))
 
+        self.preview_buttons = tk.Label(
+            self.preview_card,
+            text="No buttons added",
+            font=("Segoe UI", 9),
+            fg=PALETTE["soft"],
+            bg=PALETTE["input"],
+            anchor="w",
+            justify="left",
+        )
+        self.preview_buttons.pack(fill="x", padx=14, pady=(0, 14))
+
         self.options_grid = tk.Frame(self.side_panel, bg=PALETTE["panel"])
         self.options_grid.pack(fill="x", padx=18)
 
@@ -421,6 +529,20 @@ class PresenceApp:
             highlightthickness=0,
         )
         self.timer_toggle.pack(anchor="w", padx=18, pady=(14, 6))
+
+        self.emoji_asset_toggle = tk.Checkbutton(
+            self.side_panel,
+            text="Auto-match art from emojis",
+            variable=self.emoji_asset_override_var,
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel"],
+            activeforeground=PALETTE["text"],
+            activebackground=PALETTE["panel"],
+            selectcolor=PALETTE["input"],
+            highlightthickness=0,
+        )
+        self.emoji_asset_toggle.pack(anchor="w", padx=18, pady=(0, 10))
 
         self.button_row = tk.Frame(self.side_panel, bg=PALETTE["panel"])
         self.button_row.pack(fill="x", padx=18, pady=(10, 0))
@@ -481,11 +603,64 @@ class PresenceApp:
         )
         self.status_chip.pack(anchor="w", padx=18, pady=(0, 18))
 
+        self.profiles_panel = self._make_panel(self.right_column)
+        self.profiles_panel.pack(fill="x", pady=(16, 0))
+        self._section_heading(self.profiles_panel, "Saved Profiles").pack(anchor="w", padx=18, pady=(18, 6))
+
+        self.profile_menu = tk.OptionMenu(self.profiles_panel, self.profile_var, "")
+        self.profile_menu.configure(
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel_soft"],
+            activeforeground=PALETTE["window"],
+            activebackground=PALETTE["blue"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            anchor="w",
+            padx=10,
+        )
+        self.profile_menu["menu"].configure(
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel_soft"],
+            activeforeground=PALETTE["window"],
+            activebackground=PALETTE["blue"],
+            bd=0,
+        )
+        self.profile_menu.pack(fill="x", padx=18, pady=(4, 10))
+
+        self.profile_name_entry = self._add_compact_field(
+            self.profiles_panel, "Profile name", self.profile_name_var, "After-hours grind"
+        )
+        self.profile_name_entry.pack_configure(padx=18, pady=(0, 12))
+
+        self.profile_button_row = tk.Frame(self.profiles_panel, bg=PALETTE["panel"])
+        self.profile_button_row.pack(fill="x", padx=18, pady=(0, 18))
+
+        self.save_profile_button = self._action_button(
+            self.profile_button_row, "Save", self.save_profile, PALETTE["amber"], PALETTE["window"]
+        )
+        self.save_profile_button.pack(side="left")
+
+        self.load_profile_button = self._action_button(
+            self.profile_button_row, "Load", self.load_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
+        )
+        self.load_profile_button.pack(side="left", padx=(10, 0))
+
+        self.delete_profile_button = self._action_button(
+            self.profile_button_row, "Delete", self.delete_selected_profile, PALETTE["panel_soft"], PALETTE["text"]
+        )
+        self.delete_profile_button.pack(side="left", padx=(10, 0))
+
     def _make_panel(self, parent: tk.Widget) -> tk.Frame:
         return tk.Frame(parent, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
 
     def _section_heading(self, parent: tk.Widget, text: str) -> tk.Label:
         return tk.Label(parent, text=text, font=("Segoe UI Semibold", 11), fg=PALETTE["blue"], bg=parent.cget("bg"))
+
+    def _subtle_heading(self, parent: tk.Widget, text: str) -> tk.Label:
+        return tk.Label(parent, text=text, font=("Segoe UI Semibold", 10), fg=PALETTE["cyan"], bg=parent.cget("bg"))
 
     def _metric_label(self, parent: tk.Widget, text: str) -> tk.Label:
         return tk.Label(parent, text=text, font=("Segoe UI", 10), fg=PALETTE["soft"], bg=parent.cget("bg"))
@@ -522,6 +697,51 @@ class PresenceApp:
         )
         entry.pack(fill="x", ipady=13)
         return entry
+
+    def _add_compact_field(self, parent: tk.Widget, label: str, variable: tk.StringVar, placeholder: str) -> tk.Entry:
+        frame = tk.Frame(parent, bg=parent.cget("bg"))
+        frame.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            frame,
+            text=label,
+            font=("Segoe UI", 9),
+            fg=PALETTE["soft"],
+            bg=parent.cget("bg"),
+        ).pack(anchor="w", pady=(0, 5))
+
+        entry = tk.Entry(
+            frame,
+            textvariable=variable,
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["input"],
+            insertbackground=PALETTE["text"],
+            relief="flat",
+            bd=0,
+        )
+        entry.pack(fill="x", ipady=8)
+        entry.insert(0, "")
+        entry.configure(takefocus=True)
+        return entry
+
+    def _action_button(self, parent: tk.Widget, text: str, command: object, bg: str, fg: str) -> tk.Button:
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            font=("Segoe UI Semibold", 10),
+            fg=fg,
+            bg=bg,
+            activeforeground=PALETTE["window"] if bg != PALETTE["panel_soft"] else PALETTE["text"],
+            activebackground=PALETTE["blue"] if bg == PALETTE["panel_soft"] else PALETTE["gold"],
+            relief="flat",
+            bd=0,
+            padx=16,
+            pady=9,
+            cursor="hand2",
+        )
+        return button
 
     def _labeled_option(self, parent: tk.Widget, label: str, variable: tk.StringVar, options: list[str], row: int) -> None:
         frame = tk.Frame(parent, bg=PALETTE["panel"])
@@ -569,9 +789,63 @@ class PresenceApp:
         name = self.name_var.get().strip() or "Activity name appears here"
         details = self.details_var.get().strip() or "Details line"
         state = self.state_var.get().strip() or "State line"
+        preview_path = self._resolve_preview_path()
+        buttons = self._collect_buttons(strict=False)
+
         self.preview_name.configure(text=name[:32])
         self.preview_details.configure(text=details[:48])
         self.preview_state.configure(text=state[:48])
+        if buttons:
+            self.preview_buttons.configure(text="Buttons: " + " | ".join(button["label"] for button in buttons))
+        else:
+            self.preview_buttons.configure(text="No buttons added")
+
+        if preview_path is not None and preview_path.exists():
+            try:
+                image = tk.PhotoImage(file=str(preview_path))
+                factor = max(1, math.ceil(max(image.width(), image.height()) / 74))
+                self.preview_asset_photo = image.subsample(factor, factor)
+                self.preview_art_label.configure(image=self.preview_asset_photo, text="")
+                return
+            except Exception:
+                self.preview_asset_photo = None
+
+        self.preview_art_label.configure(image="", text="Art")
+
+    def _resolve_large_asset(self) -> tuple[str, str]:
+        activity_label = self._resolve_art_activity_label()
+        key = self.activity_image_keys.get(activity_label, "").strip() or self.large_image_key
+        text = self.activity_image_texts.get(activity_label, "").strip() or self.large_image_text
+        return key[:128], text[:128]
+
+    def _resolve_preview_path(self) -> Path | None:
+        activity_label = self._resolve_art_activity_label()
+        preview_path = ACTIVITY_PREVIEW_PATHS.get(activity_label)
+        if preview_path is not None and preview_path.exists():
+            return preview_path
+        if MASCOT_PATH.exists():
+            return MASCOT_PATH
+        return None
+
+    def _resolve_art_activity_label(self) -> str:
+        if self.emoji_asset_override_var.get():
+            emoji_match = self._match_activity_from_emoji()
+            if emoji_match:
+                return emoji_match
+        return self.activity_type_var.get()
+
+    def _match_activity_from_emoji(self) -> str | None:
+        combined = " ".join(
+            (
+                self.name_var.get().strip(),
+                self.details_var.get().strip(),
+                self.state_var.get().strip(),
+            )
+        )
+        for activity_label, emoji_group in EMOJI_ASSET_HINTS.items():
+            if any(emoji in combined for emoji in emoji_group):
+                return activity_label
+        return None
 
     def apply_preset(self, preset: dict[str, str]) -> None:
         self.name_var.set(preset["name"])
@@ -583,6 +857,96 @@ class PresenceApp:
         self.name_entry.focus_set()
         self.name_entry.icursor("end")
         self._update_preview()
+
+    def _profile_payload(self) -> dict[str, object]:
+        return {
+            "name": self.name_var.get().strip(),
+            "details": self.details_var.get().strip(),
+            "state": self.state_var.get().strip(),
+            "display_mode": self.display_mode_var.get(),
+            "activity_type": self.activity_type_var.get(),
+            "timer_enabled": self.timer_enabled_var.get(),
+            "emoji_asset_override": self.emoji_asset_override_var.get(),
+            "primary_button_label": self.primary_button_label_var.get().strip(),
+            "primary_button_url": self.primary_button_url_var.get().strip(),
+            "secondary_button_label": self.secondary_button_label_var.get().strip(),
+            "secondary_button_url": self.secondary_button_url_var.get().strip(),
+        }
+
+    def _apply_profile_payload(self, payload: dict[str, object]) -> None:
+        self.name_var.set(str(payload.get("name", "")))
+        self.details_var.set(str(payload.get("details", "")))
+        self.state_var.set(str(payload.get("state", "")))
+        self.display_mode_var.set(str(payload.get("display_mode", "Show activity name")))
+        self.activity_type_var.set(str(payload.get("activity_type", "Playing")))
+        self.timer_enabled_var.set(bool(payload.get("timer_enabled", True)))
+        self.emoji_asset_override_var.set(bool(payload.get("emoji_asset_override", True)))
+        self.primary_button_label_var.set(str(payload.get("primary_button_label", "")))
+        self.primary_button_url_var.set(str(payload.get("primary_button_url", "")))
+        self.secondary_button_label_var.set(str(payload.get("secondary_button_label", "")))
+        self.secondary_button_url_var.set(str(payload.get("secondary_button_url", "")))
+        self._update_preview()
+
+    def _load_profiles(self) -> dict[str, dict[str, object]]:
+        if not PROFILES_PATH.exists():
+            return {}
+        try:
+            with PROFILES_PATH.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            if isinstance(data, dict):
+                return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {}
+
+    def _save_profiles(self) -> None:
+        with PROFILES_PATH.open("w", encoding="utf-8") as file:
+            json.dump(self.profiles, file, indent=2, sort_keys=True)
+
+    def _refresh_profile_menu(self) -> None:
+        menu = self.profile_menu["menu"]
+        menu.delete(0, "end")
+        names = sorted(self.profiles)
+        if not names:
+            self.profile_var.set("")
+            menu.add_command(label="No saved profiles yet", command=lambda: None)
+            return
+        if self.profile_var.get() not in names:
+            self.profile_var.set(names[0])
+        for name in names:
+            menu.add_command(label=name, command=lambda value=name: self.profile_var.set(value))
+
+    def save_profile(self) -> None:
+        profile_name = self.profile_name_var.get().strip() or self.name_var.get().strip()
+        if not profile_name:
+            messagebox.showerror("Missing Profile Name", "Add a profile name before saving.")
+            return
+        self.profiles[profile_name] = self._profile_payload()
+        self._save_profiles()
+        self.profile_var.set(profile_name)
+        self._refresh_profile_menu()
+        self._flash_status(PALETTE["gold"], f'Saved profile "{profile_name}".')
+
+    def load_selected_profile(self) -> None:
+        profile_name = self.profile_var.get().strip()
+        payload = self.profiles.get(profile_name)
+        if not profile_name or payload is None:
+            self._flash_status(PALETTE["gold"], "Choose a saved profile first.")
+            return
+        self.profile_name_var.set(profile_name)
+        self._apply_profile_payload(payload)
+        self._flash_status(PALETTE["mint"], f'Loaded profile "{profile_name}".')
+
+    def delete_selected_profile(self) -> None:
+        profile_name = self.profile_var.get().strip()
+        if not profile_name or profile_name not in self.profiles:
+            self._flash_status(PALETTE["gold"], "Choose a saved profile first.")
+            return
+        del self.profiles[profile_name]
+        self._save_profiles()
+        self.profile_name_var.set("")
+        self._refresh_profile_menu()
+        self._flash_status(PALETTE["rose"], f'Deleted profile "{profile_name}".')
 
     def _on_content_configure(self, _event: tk.Event) -> None:
         self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
@@ -618,11 +982,43 @@ class PresenceApp:
                         "client_id": str(data.get("client_id", DEFAULT_CONFIG["client_id"])).strip(),
                         "large_image_key": str(data.get("large_image_key", DEFAULT_CONFIG["large_image_key"])).strip(),
                         "large_image_text": str(data.get("large_image_text", DEFAULT_CONFIG["large_image_text"])).strip(),
+                        "small_image_key": str(data.get("small_image_key", DEFAULT_CONFIG["small_image_key"])).strip(),
+                        "small_image_text": str(data.get("small_image_text", DEFAULT_CONFIG["small_image_text"])).strip(),
+                        "playing_image_key": str(data.get("playing_image_key", DEFAULT_CONFIG["playing_image_key"])).strip(),
+                        "playing_image_text": str(data.get("playing_image_text", DEFAULT_CONFIG["playing_image_text"])).strip(),
+                        "listening_image_key": str(data.get("listening_image_key", DEFAULT_CONFIG["listening_image_key"])).strip(),
+                        "listening_image_text": str(data.get("listening_image_text", DEFAULT_CONFIG["listening_image_text"])).strip(),
+                        "watching_image_key": str(data.get("watching_image_key", DEFAULT_CONFIG["watching_image_key"])).strip(),
+                        "watching_image_text": str(data.get("watching_image_text", DEFAULT_CONFIG["watching_image_text"])).strip(),
+                        "competing_image_key": str(data.get("competing_image_key", DEFAULT_CONFIG["competing_image_key"])).strip(),
+                        "competing_image_text": str(data.get("competing_image_text", DEFAULT_CONFIG["competing_image_text"])).strip(),
+                        "emoji_asset_override": bool(data.get("emoji_asset_override", DEFAULT_CONFIG["emoji_asset_override"])),
                     }
             except (OSError, json.JSONDecodeError):
                 continue
 
         return DEFAULT_CONFIG.copy()
+
+    def _collect_buttons(self, strict: bool = True) -> list[dict[str, str]]:
+        buttons: list[dict[str, str]] = []
+        for label_var, url_var in (
+            (self.primary_button_label_var, self.primary_button_url_var),
+            (self.secondary_button_label_var, self.secondary_button_url_var),
+        ):
+            label = label_var.get().strip()
+            url = url_var.get().strip()
+            if not label and not url:
+                continue
+            if not label or not url:
+                if strict:
+                    raise ValueError("Each Discord button needs both a label and a URL.")
+                return []
+            if not url.lower().startswith(("https://", "http://")):
+                if strict:
+                    raise ValueError("Button URLs must start with https:// or http://.")
+                return []
+            buttons.append({"label": label[:32], "url": url[:512]})
+        return buttons
 
     def _ensure_connection(self) -> None:
         if self.rpc is not None and self.connected_client_id == self.client_id:
@@ -675,6 +1071,8 @@ class PresenceApp:
             display_mode = DISPLAY_MODE_OPTIONS[self.display_mode_var.get()]
             activity_type = ACTIVITY_TYPE_OPTIONS[self.activity_type_var.get()]
             start_time = int(time.time()) if self.timer_enabled_var.get() else None
+            large_key, large_text = self._resolve_large_asset()
+            buttons = self._collect_buttons(strict=True)
             self.rpc.update(
                 name=activity_name[:128],
                 details=details[:128] if details else None,
@@ -682,11 +1080,17 @@ class PresenceApp:
                 activity_type=activity_type,
                 status_display_type=display_mode,
                 start=start_time,
-                large_image=self.large_image_key or None,
-                large_text=self.large_image_text[:128] if self.large_image_key and self.large_image_text else None,
+                large_image=large_key or None,
+                large_text=large_text if large_key and large_text else None,
+                small_image=self.small_image_key[:128] if self.small_image_key else None,
+                small_text=self.small_image_text[:128] if self.small_image_key and self.small_image_text else None,
+                buttons=buttons or None,
             )
             self._flash_status(PALETTE["mint"], f'Casting "{activity_name[:44]}".')
             self._update_preview()
+        except ValueError as exc:
+            self._flash_status(PALETTE["gold"], str(exc))
+            messagebox.showerror("PresenceCast Input Error", str(exc))
         except Exception as exc:
             self._flash_status(PALETTE["rose"], "Discord connection failed.")
             messagebox.showerror(
