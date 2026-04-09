@@ -47,6 +47,13 @@ This repo includes a GitHub Actions workflow at `.github/workflows/release.yml`.
 - Pushing a tag like `v1.0.0` builds the Windows executable
 - The workflow uploads `PresenceCast.exe`
 - Tagged builds are published to GitHub Releases automatically
+- Release builds can inject a Discord Application ID from the GitHub secret `PRESENCECAST_CLIENT_ID`
+- Keep the public repo blank in `config.json`; let releases provide the ready-to-run config
+
+## Notes
+
+- A Discord Application ID is not a private token, so users can still discover it from a shipped desktop app
+- The safe approach is to keep it out of the public source repo and inject it only during release builds
 
 ## License
 

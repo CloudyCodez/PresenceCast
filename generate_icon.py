@@ -42,11 +42,16 @@ def pack_ico(images: list[tuple[int, bytes]]) -> bytes:
 
 
 def main() -> None:
-    if not SOURCE_PATH.exists():
-        raise FileNotFoundError(f"Icon source image was not found at {SOURCE_PATH}")
+    source = WORKSPACE_SOURCE if WORKSPACE_SOURCE.exists() else SOURCE_PATH
+    if not source.exists():
+        raise FileNotFoundError(
+            f"Icon source image was not found at {WORKSPACE_SOURCE} or {SOURCE_PATH}"
+        )
 
-    shutil.copyfile(SOURCE_PATH, WORKSPACE_SOURCE)
-    shutil.copyfile(SOURCE_PATH, PNG_PATH)
+    if source != WORKSPACE_SOURCE:
+        shutil.copyfile(source, WORKSPACE_SOURCE)
+
+    shutil.copyfile(source, PNG_PATH)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -56,7 +61,7 @@ def main() -> None:
         powershell_script = rf"""
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
-$src = '{SOURCE_PATH}'
+$src = '{source}'
 $outputs = '{joined_outputs}'.Split(',')
 $sizes = @(16,24,32,48,64,128,256)
 $image = [System.Drawing.Image]::FromFile($src)

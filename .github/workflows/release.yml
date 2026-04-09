@@ -26,6 +26,20 @@ jobs:
         shell: pwsh
         run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt
 
+      - name: Inject Release Config
+        shell: pwsh
+        env:
+          PRESENCECAST_CLIENT_ID: ${{ secrets.PRESENCECAST_CLIENT_ID }}
+        run: |
+          if (-not $env:PRESENCECAST_CLIENT_ID) {
+            throw "Missing GitHub secret: PRESENCECAST_CLIENT_ID"
+          }
+          @"
+          {
+            "client_id": "$env:PRESENCECAST_CLIENT_ID"
+          }
+          "@ | Set-Content -LiteralPath "config.json" -Encoding utf8
+
       - name: Generate Icon
         shell: pwsh
         run: python generate_icon.py
