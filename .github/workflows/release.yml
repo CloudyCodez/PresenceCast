@@ -1,0 +1,53 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt
+
+      - name: Generate Icon
+        shell: pwsh
+        run: python generate_icon.py
+
+      - name: Build Executable
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --onefile --windowed --add-data "config.json;." --add-data "presencecast.ico;." --add-data "presencecast.png;." --icon presencecast.ico --name PresenceCast app.py
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PresenceCast-windows
+          path: dist/PresenceCast.exe
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view ${{ github.ref_name }} *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create ${{ github.ref_name }} --generate-notes --latest
+          }
+          gh release upload ${{ github.ref_name }} dist/PresenceCast.exe --clobber
