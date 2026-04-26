@@ -1,16 +1,21 @@
 import json
 import math
+import os
 import secrets
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import webbrowser
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from PIL import Image, ImageTk
 from pypresence import ActivityType, Presence
-from pypresence.payloads import Payload
 from pypresence.types import StatusDisplayType
 
 
@@ -32,6 +37,11 @@ DEFAULT_CONFIG = {
 }
 APP_NAME = "PresenceCast 2.0"
 TOOL_LABEL = "Presence Studio"
+APP_VERSION = "2.0.1"
+GITHUB_REPOSITORY = "CloudyCodez/PresenceCast"
+RELEASE_ASSET_NAME = "PresenceCast.exe"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
 
 PALETTE = {
     "window": "#07111A",
@@ -323,6 +333,7 @@ class PresenceApp:
         self.profile_name_var = tk.StringVar()
         self.profile_var = tk.StringVar()
         self.status_var = tk.StringVar(value="PresenceCast 2.0 is ready to shape a richer Discord profile.")
+        self.update_status_var = tk.StringVar(value=f"Version {APP_VERSION}")
         self.display_mode_var = tk.StringVar(value="Show activity name")
         self.activity_type_var = tk.StringVar(value="Playing")
         self.timer_mode_var = tk.StringVar(value="Elapsed")
@@ -335,6 +346,7 @@ class PresenceApp:
         self.spectate_secret_var = tk.StringVar()
         self.match_secret_var = tk.StringVar()
         self.instance_var = tk.BooleanVar(value=True)
+        self.show_advanced_var = tk.BooleanVar(value=False)
         self.manual_large_image_var = tk.StringVar()
         self.manual_large_text_var = tk.StringVar()
         self.manual_small_image_var = tk.StringVar()
@@ -348,6 +360,8 @@ class PresenceApp:
         self.motion_phase = 0.0
         self.motion_after_id: str | None = None
         self._mousewheel_bound = False
+        self.update_info: dict[str, str] | None = None
+        self.update_check_in_progress = False
 
         self._apply_icon()
         self._build_ui()
@@ -357,6 +371,7 @@ class PresenceApp:
         self._refresh_preview()
         self._start_status_animation()
         self._start_surface_motion()
+        self.root.after(1800, self.check_for_updates)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _apply_icon(self) -> None:
@@ -463,7 +478,7 @@ class PresenceApp:
 
         tk.Label(
             text_shell,
-            text="Design a richer Discord identity.",
+            text="Set a Discord presence fast.",
             font=("Bahnschrift SemiBold", 31),
             fg=PALETTE["text"],
             bg=PALETTE["header"],
@@ -471,7 +486,7 @@ class PresenceApp:
 
         tk.Label(
             text_shell,
-            text="PresenceCast 2.0 turns the old utility into a cinematic studio: craft narrative, timing, party state, art, links, and Discord-aware polish in one pass.",
+            text="PresenceCast now focuses on the core flow first: write the three main lines, preview the card, and cast. Advanced options stay available, but out of the way.",
             font=("Segoe UI", 11),
             fg=PALETTE["muted"],
             bg=PALETTE["header"],
@@ -530,108 +545,210 @@ class PresenceApp:
             ).pack()
 
     def _build_scroll_content(self) -> None:
-        self.summary_row = tk.Frame(self.content, bg=PALETTE["window"])
-        self.summary_row.pack(fill="x", padx=8, pady=(0, 16))
-        self.summary_cards = {
-            "readiness": self._summary_card(self.summary_row, "Profile Readiness"),
-            "social": self._summary_card(self.summary_row, "Social Layer"),
-            "surface": self._summary_card(self.summary_row, "Surface Strategy"),
-        }
-        self.summary_cards["readiness"]["frame"].pack(side="left", fill="x", expand=True, padx=(0, 12))
-        self.summary_cards["social"]["frame"].pack(side="left", fill="x", expand=True, padx=(0, 12))
-        self.summary_cards["surface"]["frame"].pack(side="left", fill="x", expand=True)
-
         self.templates_panel = self._make_panel(self.content, bg=PALETTE["panel_alt"])
         self.templates_panel.pack(fill="x", padx=8, pady=(0, 16))
-        self._section_heading(self.templates_panel, "Scene Deck").pack(anchor="w", padx=20, pady=(18, 6))
+        self._section_heading(self.templates_panel, "Quick Starts").pack(anchor="w", padx=20, pady=(18, 6))
         tk.Label(
             self.templates_panel,
-            text="Start from a vibe, then push it further. These scenes are tuned for concise, expressive Discord presence.",
+            text="Pick a starting point, adjust the three main lines, then cast. Everything else is tucked into Advanced.",
             font=("Segoe UI", 10),
             fg=PALETTE["muted"],
             bg=PALETTE["panel_alt"],
-            wraplength=1100,
+            wraplength=1080,
             justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 14))
-
-        cards_row = tk.Frame(self.templates_panel, bg=PALETTE["panel_alt"])
-        cards_row.pack(fill="x", padx=18, pady=(0, 18))
-        for index, preset in enumerate(PRESETS):
-            card = tk.Frame(
-                cards_row,
-                bg=PALETTE["panel"],
-                highlightbackground=PALETTE["line"],
-                highlightthickness=1,
-                padx=14,
-                pady=14,
-                cursor="hand2",
-            )
-            card.grid(row=index // 3, column=index % 3, sticky="nsew", padx=(0, 12), pady=(0, 12))
-            cards_row.grid_columnconfigure(index % 3, weight=1)
-
-            accent = ACTIVITY_ACCENTS[preset["type"]]
-            tk.Label(
-                card,
-                text=preset["label"],
-                font=("Bahnschrift SemiBold", 16),
-                fg=PALETTE["text"],
-                bg=PALETTE["panel"],
-            ).pack(anchor="w")
-            tk.Label(
-                card,
-                text=preset["note"],
-                font=("Segoe UI", 10),
-                fg=PALETTE["muted"],
-                bg=PALETTE["panel"],
-            ).pack(anchor="w", pady=(3, 12))
-            self._chip(card, preset["type"], accent, PALETTE["ink"]).pack(anchor="w")
-            tk.Button(
-                card,
-                text="Load Scene",
-                command=lambda payload=preset: self.apply_preset(payload),
-                font=("Segoe UI Semibold", 10),
-                fg=PALETTE["ink"],
-                bg=accent,
-                activeforeground=PALETTE["ink"],
-                activebackground=PALETTE["gold"],
-                relief="flat",
-                bd=0,
-                padx=12,
-                pady=8,
-                cursor="hand2",
-            ).pack(anchor="w", pady=(14, 0))
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+        self._build_preset_strip(self.templates_panel)
 
         self.workspace = tk.Frame(self.content, bg=PALETTE["window"])
         self.workspace.pack(fill="both", expand=True, padx=8, pady=(0, 12))
-        self.workspace.grid_columnconfigure(0, weight=3)
+        self.workspace.grid_columnconfigure(0, weight=5)
         self.workspace.grid_columnconfigure(1, weight=3)
-        self.workspace.grid_columnconfigure(2, weight=2)
 
         left_column = tk.Frame(self.workspace, bg=PALETTE["window"])
-        middle_column = tk.Frame(self.workspace, bg=PALETTE["window"])
         right_column = tk.Frame(self.workspace, bg=PALETTE["window"])
         left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        middle_column.grid(row=0, column=1, sticky="nsew", padx=(0, 14))
-        right_column.grid(row=0, column=2, sticky="nsew")
+        right_column.grid(row=0, column=1, sticky="nsew")
 
         self._build_story_panel(left_column)
-        self._build_links_panel(left_column)
+        self._build_advanced_panel(left_column)
         self._build_profiles_panel(left_column)
-        self._build_theme_panel(left_column)
-        self._build_mechanics_panel(middle_column)
-        self._build_art_panel(middle_column)
-        self._build_history_panel(middle_column)
         self._build_preview_panel(right_column)
-        self._build_insights_panel(right_column)
         self._build_action_panel(right_column)
+
+    def _build_preset_strip(self, parent: tk.Widget) -> None:
+        row = tk.Frame(parent, bg=parent.cget("bg"))
+        row.pack(fill="x", padx=18, pady=(0, 18))
+        for index, preset in enumerate(PRESETS):
+            button = tk.Button(
+                row,
+                text=preset["label"],
+                command=lambda payload=preset: self.apply_preset(payload),
+                font=("Segoe UI Semibold", 10),
+                fg=PALETTE["text"],
+                bg=PALETTE["panel"],
+                activeforeground=PALETTE["ink"],
+                activebackground=ACTIVITY_ACCENTS[preset["type"]],
+                relief="flat",
+                bd=0,
+                padx=14,
+                pady=10,
+                cursor="hand2",
+            )
+            button.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0, 10), pady=(0, 10))
+            row.grid_columnconfigure(index % 3, weight=1)
+
+    def _build_advanced_panel(self, parent: tk.Widget) -> None:
+        self.advanced_panel = self._make_panel(parent)
+        self.advanced_panel.pack(fill="x", pady=(16, 0))
+        top = tk.Frame(self.advanced_panel, bg=PALETTE["panel"])
+        top.pack(fill="x", padx=20, pady=(18, 10))
+        tk.Label(
+            top,
+            text="Advanced",
+            font=("Bahnschrift SemiBold", 18),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel"],
+        ).pack(side="left")
+        self.advanced_toggle_button = self._action_button(
+            top,
+            "Show",
+            self._toggle_advanced_panel,
+            PALETTE["panel_soft"],
+            PALETTE["text"],
+        )
+        self.advanced_toggle_button.pack(side="right")
+
+        tk.Label(
+            self.advanced_panel,
+            text="Optional controls for buttons, art, timing, and party data.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel"],
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        self.advanced_content = tk.Frame(self.advanced_panel, bg=PALETTE["panel"])
+
+        self._segmented_control(
+            self.advanced_content,
+            "Activity type",
+            self.activity_type_var,
+            list(ACTIVITY_TYPE_OPTIONS.keys()),
+            "Choose the verb Discord shows for this presence.",
+            accent_map=ACTIVITY_ACCENTS,
+        )
+        self._segmented_control(
+            self.advanced_content,
+            "Status display mode",
+            self.display_mode_var,
+            list(DISPLAY_MODE_OPTIONS.keys()),
+            "Controls the compact line in Discord's status strip.",
+        )
+        self._segmented_control(
+            self.advanced_content,
+            "Timing mode",
+            self.timer_mode_var,
+            list(TIMER_MODES),
+            "Use elapsed for 'started at', countdown for an end time, or static for no timer.",
+        )
+
+        timing_row = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
+        timing_row.pack(fill="x", padx=20, pady=(0, 10))
+        self._compact_field(timing_row, "Countdown duration (minutes)", self.duration_var, "45").pack(fill="x")
+
+        buttons_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
+        buttons_grid.pack(fill="x", padx=20, pady=(0, 8))
+        buttons_grid.grid_columnconfigure(0, weight=1)
+        buttons_grid.grid_columnconfigure(1, weight=1)
+        self._compact_field(buttons_grid, "Primary button label", self.primary_button_label_var, "Project").grid(
+            row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
+        )
+        self._compact_field(
+            buttons_grid, "Primary button URL", self.primary_button_url_var, "https://example.com/project"
+        ).grid(row=0, column=1, sticky="ew", pady=(0, 10))
+        self._compact_field(buttons_grid, "Secondary button label", self.secondary_button_label_var, "Community").grid(
+            row=1, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
+        )
+        self._compact_field(
+            buttons_grid, "Secondary button URL", self.secondary_button_url_var, "https://discord.gg/your-room"
+        ).grid(row=1, column=1, sticky="ew", pady=(0, 10))
+
+        self.party_toggle = tk.Checkbutton(
+            self.advanced_content,
+            text="Enable party information",
+            variable=self.party_enabled_var,
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel"],
+            activeforeground=PALETTE["text"],
+            activebackground=PALETTE["panel"],
+            selectcolor=PALETTE["input"],
+            highlightthickness=0,
+        )
+        self.party_toggle.pack(anchor="w", padx=20, pady=(0, 10))
+
+        party_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
+        party_grid.pack(fill="x", padx=20, pady=(0, 8))
+        party_grid.grid_columnconfigure(0, weight=1)
+        party_grid.grid_columnconfigure(1, weight=1)
+        self._compact_field(party_grid, "Party current", self.party_current_var, "1").grid(
+            row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
+        )
+        self._compact_field(party_grid, "Party max", self.party_max_var, "4").grid(
+            row=0, column=1, sticky="ew", pady=(0, 10)
+        )
+
+        art_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
+        art_grid.pack(fill="x", padx=20, pady=(0, 18))
+        art_grid.grid_columnconfigure(0, weight=1)
+        art_grid.grid_columnconfigure(1, weight=1)
+        self._compact_field(
+            art_grid, "Large image key or URL", self.manual_large_image_var, "chibi_cloud_playing"
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10))
+        self._compact_field(art_grid, "Large image tooltip", self.manual_large_text_var, "PresenceCast highlight").grid(
+            row=0, column=1, sticky="ew", pady=(0, 10)
+        )
+        self._compact_field(art_grid, "Badge image key or URL", self.manual_small_image_var, "chibi_cloud").grid(
+            row=1, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
+        )
+        self._compact_field(art_grid, "Badge tooltip", self.manual_small_text_var, "PresenceCast badge").grid(
+            row=1, column=1, sticky="ew", pady=(0, 10)
+        )
+
+        self.emoji_asset_toggle = tk.Checkbutton(
+            self.advanced_content,
+            text="Auto-match art from emoji cues",
+            variable=self.emoji_asset_override_var,
+            font=("Segoe UI", 10),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel"],
+            activeforeground=PALETTE["text"],
+            activebackground=PALETTE["panel"],
+            selectcolor=PALETTE["input"],
+            highlightthickness=0,
+        )
+        self.emoji_asset_toggle.pack(anchor="w", padx=20, pady=(0, 18))
+
+        self._toggle_advanced_panel(force=False)
+
+    def _toggle_advanced_panel(self, force: bool | None = None) -> None:
+        visible = self.show_advanced_var.get() if force is None else force
+        if force is None:
+            visible = not visible
+        self.show_advanced_var.set(visible)
+        if visible:
+            self.advanced_content.pack(fill="x")
+            self.advanced_toggle_button.configure(text="Hide")
+        else:
+            self.advanced_content.pack_forget()
+            self.advanced_toggle_button.configure(text="Show")
 
     def _build_story_panel(self, parent: tk.Widget) -> None:
         self.story_panel = self._make_panel(parent)
         self.story_panel.pack(fill="x")
-        self._section_heading(self.story_panel, "Narrative Layer").pack(anchor="w", padx=20, pady=(18, 6))
+        self._section_heading(self.story_panel, "Quick Cast").pack(anchor="w", padx=20, pady=(18, 6))
         tk.Label(
             self.story_panel,
-            text="Discord works best when it can explain your moment at a glance. Keep the lines short, concrete, and a little evocative.",
+            text="This is the main flow: name, details, state, then cast. Keep each line short enough to read in one glance.",
             font=("Segoe UI", 10),
             fg=PALETTE["muted"],
             bg=PALETTE["panel"],
@@ -669,22 +786,6 @@ class PresenceApp:
         self.name_count.pack(side="left")
         self.details_count.pack(side="left", padx=(14, 0))
         self.state_count.pack(side="left", padx=(14, 0))
-
-        self._segmented_control(
-            self.story_panel,
-            "Activity type",
-            self.activity_type_var,
-            list(ACTIVITY_TYPE_OPTIONS.keys()),
-            "Set the tone of the card and the Discord verb.",
-            accent_map=ACTIVITY_ACCENTS,
-        )
-        self._segmented_control(
-            self.story_panel,
-            "Status display mode",
-            self.display_mode_var,
-            list(DISPLAY_MODE_OPTIONS.keys()),
-            "Choose what appears in the compact Discord status strip.",
-        )
 
     def _build_links_panel(self, parent: tk.Widget) -> None:
         self.links_panel = self._make_panel(parent)
@@ -1178,6 +1279,15 @@ class PresenceApp:
         self.action_panel = self._make_panel(parent, bg=PALETTE["panel_alt"])
         self.action_panel.pack(fill="x", pady=(16, 0))
         self._section_heading(self.action_panel, "Broadcast").pack(anchor="w", padx=18, pady=(18, 6))
+        tk.Label(
+            self.action_panel,
+            text="Cast immediately, then let the app keep itself current from GitHub releases.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_alt"],
+            wraplength=280,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 10))
 
         tk.Button(
             self.action_panel,
@@ -1223,6 +1333,26 @@ class PresenceApp:
             justify="left",
         )
         self.status_chip.pack(anchor="w", padx=18, pady=(0, 10))
+
+        update_row = tk.Frame(self.action_panel, bg=PALETTE["panel_alt"])
+        update_row.pack(fill="x", padx=18, pady=(4, 8))
+        tk.Label(
+            update_row,
+            textvariable=self.update_status_var,
+            font=("Segoe UI", 9),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_alt"],
+            justify="left",
+            wraplength=180,
+        ).pack(side="left", fill="x", expand=True)
+        self.check_updates_button = self._action_button(
+            update_row,
+            "Check Updates",
+            lambda: self.check_for_updates(manual=True),
+            PALETTE["panel_soft"],
+            PALETTE["text"],
+        )
+        self.check_updates_button.pack(side="right", padx=(10, 0))
 
         tk.Label(
             self.action_panel,
@@ -1452,7 +1582,6 @@ class PresenceApp:
         self._refresh_segmented_controls()
         accent = ACTIVITY_ACCENTS[self.activity_type_var.get()]
         self.preview_state.configure(fg=accent)
-        self.readiness_score.configure(fg=accent)
 
         activity_name = self.name_var.get().strip() or "PresenceCast"
         details = self.details_var.get().strip() or "Details line"
@@ -1472,24 +1601,20 @@ class PresenceApp:
         surface_bits = []
         if self._collect_buttons(strict=False):
             surface_bits.append("Buttons")
-        urls = self._collect_urls(strict=False)
-        if urls:
-            surface_bits.append("Clickable fields")
+        if self.party_enabled_var.get() and party_text:
+            surface_bits.append(f"Party {party_text}")
         if not surface_bits:
-            surface_bits.append("Profile-first, no links")
-        self.preview_surface.configure(text=" • ".join(surface_bits))
+            surface_bits.append("Simple profile card")
+        self.preview_surface.configure(text=" | ".join(surface_bits))
 
         self._refresh_preview_art()
         self._refresh_preview_buttons()
-        self._refresh_summary_cards()
-        self._refresh_insights()
 
         self.header_card_primary.configure(highlightbackground=accent)
         self.preview_panel.configure(highlightbackground=accent)
         self.action_panel.configure(highlightbackground=accent)
         self.preview_badge_shell.configure(highlightbackground=accent)
         self.preview_art_shell.configure(highlightbackground=accent)
-        self.summary_cards["surface"]["frame"].configure(highlightbackground=accent)
         self.status_title.configure(fg=accent)
 
     def _refresh_preview_art(self) -> None:
@@ -1952,6 +2077,8 @@ class PresenceApp:
         self._flash_status(PALETTE["rose"], f'Deleted profile "{profile_name}".')
 
     def _refresh_history_panel(self) -> None:
+        if not hasattr(self, "history_list"):
+            return
         for child in self.history_list.winfo_children():
             child.destroy()
 
@@ -2120,6 +2247,200 @@ class PresenceApp:
             raise ValueError("Party current size cannot be larger than party max.")
         return current, maximum
 
+    def _parse_version_tuple(self, raw: str) -> tuple[int, int, int]:
+        cleaned = raw.strip().lstrip("vV")
+        values = []
+        for part in cleaned.split("."):
+            digits = "".join(character for character in part if character.isdigit())
+            values.append(int(digits or "0"))
+        while len(values) < 3:
+            values.append(0)
+        return tuple(values[:3])
+
+    def _is_packaged_build(self) -> bool:
+        return bool(getattr(sys, "frozen", False) and Path(sys.executable).suffix.lower() == ".exe")
+
+    def _set_update_busy(self, busy: bool) -> None:
+        self.update_check_in_progress = busy
+        if hasattr(self, "check_updates_button"):
+            self.check_updates_button.configure(state="disabled" if busy else "normal")
+
+    def _fetch_latest_release_info(self) -> dict[str, str]:
+        request = urllib.request.Request(
+            LATEST_RELEASE_API,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": f"PresenceCast/{APP_VERSION}",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        tag_name = str(payload.get("tag_name", "")).strip()
+        version = tag_name.lstrip("vV")
+        asset_url = ""
+        for asset in payload.get("assets", []):
+            if str(asset.get("name", "")).strip() == RELEASE_ASSET_NAME:
+                asset_url = str(asset.get("browser_download_url", "")).strip()
+                break
+
+        return {
+            "tag_name": tag_name,
+            "version": version,
+            "html_url": str(payload.get("html_url", RELEASES_URL)).strip() or RELEASES_URL,
+            "asset_url": asset_url,
+            "published_at": str(payload.get("published_at", "")).strip(),
+        }
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        if self.update_check_in_progress:
+            return
+        self._set_update_busy(True)
+        self.update_status_var.set("Checking for updates...")
+
+        def worker() -> None:
+            try:
+                info = self._fetch_latest_release_info()
+                self.root.after(0, lambda: self._handle_update_check_result(info, manual, None))
+            except Exception as exc:
+                self.root.after(0, lambda: self._handle_update_check_result(None, manual, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_update_check_result(
+        self,
+        info: dict[str, str] | None,
+        manual: bool,
+        error: Exception | None,
+    ) -> None:
+        self._set_update_busy(False)
+        if error is not None:
+            self.update_status_var.set(f"Version {APP_VERSION}")
+            if manual:
+                messagebox.showerror("Update Check Failed", f"Could not check for updates.\n\nError: {error}")
+            return
+
+        assert info is not None
+        self.update_info = info
+        current_version = self._parse_version_tuple(APP_VERSION)
+        latest_version = self._parse_version_tuple(info["version"])
+
+        if latest_version > current_version:
+            self.update_status_var.set(f"Update {info['version']} available")
+            prompt = (
+                f"PresenceCast {info['version']} is available.\n\n"
+                f"You are on {APP_VERSION}."
+            )
+            if self._is_packaged_build() and info.get("asset_url"):
+                prompt += "\n\nDownload and install it now?"
+                if manual or True:
+                    if messagebox.askyesno("Update Available", prompt):
+                        self.download_and_install_update(info)
+            else:
+                prompt += "\n\nThis build cannot self-install updates. Open the releases page instead?"
+                if manual and messagebox.askyesno("Update Available", prompt):
+                    webbrowser.open(info["html_url"])
+        else:
+            self.update_status_var.set(f"Version {APP_VERSION} is current")
+            if manual:
+                messagebox.showinfo("Up To Date", f"PresenceCast {APP_VERSION} is already the latest release.")
+
+    def download_and_install_update(self, info: dict[str, str]) -> None:
+        if not self._is_packaged_build():
+            webbrowser.open(info.get("html_url", RELEASES_URL))
+            return
+        asset_url = info.get("asset_url", "").strip()
+        if not asset_url:
+            messagebox.showinfo("Release Found", "The latest release is available, but no Windows asset was found.")
+            webbrowser.open(info.get("html_url", RELEASES_URL))
+            return
+
+        self._set_update_busy(True)
+        self.update_status_var.set(f"Downloading {info['version']}...")
+
+        def worker() -> None:
+            target_path = Path(tempfile.gettempdir()) / f"PresenceCast-{info['version']}.exe"
+            request = urllib.request.Request(
+                asset_url,
+                headers={"User-Agent": f"PresenceCast/{APP_VERSION}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response, target_path.open("wb") as file:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        file.write(chunk)
+                self.root.after(0, lambda: self._finish_update_download(info, target_path, None))
+            except Exception as exc:
+                self.root.after(0, lambda: self._finish_update_download(info, target_path, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_update_download(self, info: dict[str, str], target_path: Path, error: Exception | None) -> None:
+        self._set_update_busy(False)
+        if error is not None:
+            self.update_status_var.set(f"Version {APP_VERSION}")
+            messagebox.showerror("Update Download Failed", f"Could not download the update.\n\nError: {error}")
+            return
+        self.update_status_var.set(f"Installing {info['version']}...")
+        self._launch_self_update(target_path)
+
+    def _launch_self_update(self, downloaded_exe: Path) -> None:
+        current_exe = Path(sys.executable).resolve()
+        backup_exe = current_exe.with_suffix(".old.exe")
+        script_path = Path(tempfile.gettempdir()) / f"presencecast-updater-{int(time.time())}.ps1"
+        script_path.write_text(
+            "\n".join(
+                [
+                    "param(",
+                    "  [string]$TargetExe,",
+                    "  [string]$DownloadedExe,",
+                    "  [string]$BackupExe,",
+                    "  [int]$ProcessIdToWaitFor",
+                    ")",
+                    "$ErrorActionPreference = 'Stop'",
+                    "for ($i = 0; $i -lt 180; $i++) {",
+                    "  if (-not (Get-Process -Id $ProcessIdToWaitFor -ErrorAction SilentlyContinue)) { break }",
+                    "  Start-Sleep -Milliseconds 500",
+                    "}",
+                    "for ($i = 0; $i -lt 20; $i++) {",
+                    "  try {",
+                    "    if (Test-Path -LiteralPath $BackupExe) { Remove-Item -LiteralPath $BackupExe -Force }",
+                    "    if (Test-Path -LiteralPath $TargetExe) { Move-Item -LiteralPath $TargetExe -Destination $BackupExe -Force }",
+                    "    Move-Item -LiteralPath $DownloadedExe -Destination $TargetExe -Force",
+                    "    Start-Process -FilePath $TargetExe",
+                    "    exit 0",
+                    "  } catch {",
+                    "    Start-Sleep -Seconds 1",
+                    "  }",
+                    "}",
+                    "exit 1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                str(current_exe),
+                str(downloaded_exe),
+                str(backup_exe),
+                str(os.getpid()),
+            ],
+            creationflags=creation_flags,
+        )
+        self._flash_status(PALETTE["gold"], "Installing update and restarting PresenceCast...")
+        self.on_close()
+
     def _ensure_connection(self) -> None:
         if self.rpc is not None and self.connected_client_id == self.client_id:
             return
@@ -2181,7 +2502,8 @@ class PresenceApp:
         ):
             widget.configure(highlightbackground=border)
 
-        self.active_theme_chip.configure(bg=border, fg=PALETTE["ink"])
+        if hasattr(self, "active_theme_chip"):
+            self.active_theme_chip.configure(bg=border, fg=PALETTE["ink"])
         self.preview_meta.configure(fg=glow)
         self.preview_surface.configure(fg=self._blend_hex(PALETTE["gold"], PALETTE["text"], ratio * 0.25))
 
@@ -2212,7 +2534,6 @@ class PresenceApp:
         large_image, large_text = self._resolved_large_asset()
         small_image, small_text = self._resolved_small_asset()
         buttons = self._collect_buttons(strict=True)
-        urls = self._collect_urls(strict=True)
 
         start_time = None
         end_time = None
@@ -2232,49 +2553,39 @@ class PresenceApp:
             party_id = self.party_id_var.get().strip()[:128]
             party_size = [current, maximum]
 
-        payload = Payload.set_activity(
-            activity_type=activity_type,
-            status_display_type=display_mode,
-            name=activity_name[:128],
-            details=details[:128] if details else None,
-            state=state[:128] if state else None,
-            start=start_time,
-            end=end_time,
-            large_image=large_image or None,
-            large_text=large_text if large_image and large_text else None,
-            small_image=small_image,
-            small_text=small_text,
-            party_id=party_id,
-            party_size=party_size,
-            join=self.join_secret_var.get().strip()[:128] or None,
-            spectate=self.spectate_secret_var.get().strip()[:128] or None,
-            match=self.match_secret_var.get().strip()[:128] or None,
-            buttons=buttons or None,
-            instance=self.instance_var.get(),
-        ).data
-
-        activity = payload["args"]["activity"]
-        if urls:
-            if "details_url" in urls:
-                activity["details_url"] = urls["details_url"]
-            if "state_url" in urls:
-                activity["state_url"] = urls["state_url"]
-            assets = activity.setdefault("assets", {})
-            if "large_url" in urls:
-                assets["large_url"] = urls["large_url"]
-            if "small_url" in urls:
-                assets["small_url"] = urls["small_url"]
-        return payload
+        return {
+            "name": activity_name[:128],
+            "details": details[:128] if details else None,
+            "state": state[:128] if state else None,
+            "activity_type": activity_type,
+            "status_display_type": display_mode,
+            "start": start_time,
+            "end": end_time,
+            "large_image": large_image or None,
+            "large_text": large_text if large_image and large_text else None,
+            "small_image": small_image,
+            "small_text": small_text,
+            "party_id": party_id,
+            "party_size": party_size,
+            "join": self.join_secret_var.get().strip()[:128] or None,
+            "spectate": self.spectate_secret_var.get().strip()[:128] or None,
+            "match": self.match_secret_var.get().strip()[:128] or None,
+            "buttons": buttons or None,
+            "instance": self.instance_var.get(),
+        }
 
     def generate_presence(self) -> None:
         try:
             payload = self._build_payload()
             self._ensure_connection()
             assert self.rpc is not None
-            self.rpc.update(payload_override=payload)
+            self.rpc.update(**payload)
             self._remember_cast()
             activity_name = self.name_var.get().strip()
-            self._flash_status(PALETTE["mint"], f'Broadcasting "{activity_name[:44]}".')
+            message = f'Broadcasting "{activity_name[:44]}".'
+            if payload.get("buttons"):
+                message += " Buttons are visible to other users."
+            self._flash_status(PALETTE["mint"], message)
             self._refresh_preview()
         except ValueError as exc:
             self._flash_status(PALETTE["gold"], str(exc))

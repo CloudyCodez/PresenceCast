@@ -22,6 +22,7 @@ PresenceCast is a Windows desktop utility for shaping Discord Rich Presence with
 - Automatic recent-cast history
 - Theme import/export as JSON bundles
 - Subtle live motion across the preview studio surfaces
+- Built-in GitHub-release auto-update checks for packaged Windows builds
 - Packaged Windows `.exe`
 
 ## Requirements
@@ -64,6 +65,12 @@ Exported theme bundles are stored wherever you choose, with `theme_bundles\` use
 - Custom buttons are only visible to other users, not to the account sending the presence
 - Discord surfaces reward concise `details` and `state` text that fit on one line
 - Discord recommends expressive 1024x1024 artwork for Rich Presence assets
+
+## Updating
+
+- Packaged `.exe` builds can check GitHub Releases for newer versions from inside the app
+- When a newer Windows release is available, PresenceCast can download the new `PresenceCast.exe`, close itself, replace the running executable, and relaunch
+- Source runs can still check for updates, but they open the GitHub Releases page instead of self-installing
 
 ## Run From Source
 
