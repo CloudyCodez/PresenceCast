@@ -310,6 +310,7 @@ class PresenceApp:
         self.profiles = self._load_profiles()
         self.history = self._load_history()
         self.segmented_groups: list[tuple[tk.StringVar, dict[str, tk.Button], dict[str, str] | None]] = []
+        self.workspace_tab_buttons: dict[str, tk.Button] = {}
         self.image_cache: dict[tuple[str, int, int], ImageTk.PhotoImage] = {}
 
         self.logo_photo: ImageTk.PhotoImage | None = None
@@ -334,6 +335,7 @@ class PresenceApp:
         self.profile_var = tk.StringVar()
         self.status_var = tk.StringVar(value="PresenceCast 2.0 is ready to shape a richer Discord profile.")
         self.update_status_var = tk.StringVar(value=f"Version {APP_VERSION}")
+        self.active_workspace_tab = tk.StringVar(value="main")
         self.display_mode_var = tk.StringVar(value="Show activity name")
         self.activity_type_var = tk.StringVar(value="Playing")
         self.timer_mode_var = tk.StringVar(value="Elapsed")
@@ -569,9 +571,7 @@ class PresenceApp:
         left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         right_column.grid(row=0, column=1, sticky="nsew")
 
-        self._build_story_panel(left_column)
-        self._build_advanced_panel(left_column)
-        self._build_profiles_panel(left_column)
+        self._build_workspace_tabs(left_column)
         self._build_preview_panel(right_column)
         self._build_action_panel(right_column)
 
@@ -596,6 +596,150 @@ class PresenceApp:
             )
             button.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0, 10), pady=(0, 10))
             row.grid_columnconfigure(index % 3, weight=1)
+
+    def _build_workspace_tabs(self, parent: tk.Widget) -> None:
+        self.workspace_tabs_shell = self._make_panel(parent)
+        self.workspace_tabs_shell.pack(fill="x")
+
+        header = tk.Frame(self.workspace_tabs_shell, bg=PALETTE["panel"])
+        header.pack(fill="x", padx=20, pady=(18, 12))
+
+        tk.Label(
+            header,
+            text="Workspace",
+            font=("Bahnschrift SemiBold", 18),
+            fg=PALETTE["text"],
+            bg=PALETTE["panel"],
+        ).pack(side="left")
+
+        tabs_row = tk.Frame(header, bg=PALETTE["panel"])
+        tabs_row.pack(side="right")
+
+        self.workspace_tab_buttons["main"] = self._action_button(
+            tabs_row,
+            "Main",
+            lambda: self._switch_workspace_tab("main"),
+            PALETTE["gold"],
+            PALETTE["ink"],
+        )
+        self.workspace_tab_buttons["main"].pack(side="left")
+
+        self.workspace_tab_buttons["advanced"] = self._action_button(
+            tabs_row,
+            "Advanced",
+            lambda: self._switch_workspace_tab("advanced"),
+            PALETTE["panel_soft"],
+            PALETTE["text"],
+        )
+        self.workspace_tab_buttons["advanced"].pack(side="left", padx=(10, 0))
+
+        tk.Label(
+            self.workspace_tabs_shell,
+            text="Main keeps the everyday flow clean. Advanced holds the power-user options without crowding the first screen.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        self.workspace_page_container = tk.Frame(self.workspace_tabs_shell, bg=PALETTE["panel"])
+        self.workspace_page_container.pack(fill="x", padx=0, pady=(0, 0))
+
+        self.main_workspace_page = tk.Frame(self.workspace_page_container, bg=PALETTE["panel"])
+        self.advanced_workspace_page = tk.Frame(self.workspace_page_container, bg=PALETTE["panel"])
+
+        self._build_main_workspace_page(self.main_workspace_page)
+        self._build_advanced_workspace_page(self.advanced_workspace_page)
+        self._switch_workspace_tab("main")
+
+    def _build_main_workspace_page(self, parent: tk.Widget) -> None:
+        self._build_beginner_intro(parent)
+        self._build_story_panel(parent)
+        self._build_profiles_panel(parent)
+
+    def _build_advanced_workspace_page(self, parent: tk.Widget) -> None:
+        self._build_mechanics_panel(parent)
+        self._build_links_panel(parent)
+        self._build_art_panel(parent)
+        self._build_theme_panel(parent)
+
+    def _build_beginner_intro(self, parent: tk.Widget) -> None:
+        panel = self._make_panel(parent, bg=PALETTE["panel_alt"])
+        panel.pack(fill="x", pady=(0, 16))
+        self._section_heading(panel, "Begin Here").pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(
+            panel,
+            text="If you are new to Rich Presence, keep it simple: pick a preset, write what you are doing, add short context, then click Cast Presence.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_alt"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 14))
+
+        steps = tk.Frame(panel, bg=PALETTE["panel_alt"])
+        steps.pack(fill="x", padx=18, pady=(0, 18))
+        step_text = [
+            ("1", "Pick a vibe", "Use Quick Starts above for a strong default."),
+            ("2", "Write three short lines", "Name, details, and state should read in one glance."),
+            ("3", "Cast and check Discord", "The desktop app must be open on your PC."),
+        ]
+        for index, (number, title, body) in enumerate(step_text):
+            card = tk.Frame(
+                steps,
+                bg=PALETTE["panel"],
+                highlightbackground=PALETTE["line"],
+                highlightthickness=1,
+                padx=12,
+                pady=12,
+            )
+            card.grid(row=0, column=index, sticky="nsew", padx=(0, 10 if index < len(step_text) - 1 else 0))
+            steps.grid_columnconfigure(index, weight=1)
+            tk.Label(
+                card,
+                text=number,
+                font=("Bahnschrift SemiBold", 22),
+                fg=PALETTE["gold"],
+                bg=PALETTE["panel"],
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                text=title,
+                font=("Segoe UI Semibold", 11),
+                fg=PALETTE["text"],
+                bg=PALETTE["panel"],
+            ).pack(anchor="w", pady=(4, 2))
+            tk.Label(
+                card,
+                text=body,
+                font=("Segoe UI", 9),
+                fg=PALETTE["muted"],
+                bg=PALETTE["panel"],
+                wraplength=180,
+                justify="left",
+            ).pack(anchor="w")
+
+    def _switch_workspace_tab(self, tab_name: str) -> None:
+        self.active_workspace_tab.set(tab_name)
+        self.main_workspace_page.pack_forget()
+        self.advanced_workspace_page.pack_forget()
+
+        active_button_bg = PALETTE["gold"]
+        active_button_fg = PALETTE["ink"]
+        inactive_bg = PALETTE["panel_soft"]
+        inactive_fg = PALETTE["text"]
+
+        for name, button in self.workspace_tab_buttons.items():
+            if name == tab_name:
+                button.configure(bg=active_button_bg, fg=active_button_fg, activebackground=PALETTE["aqua"])
+            else:
+                button.configure(bg=inactive_bg, fg=inactive_fg, activebackground=PALETTE["sky"])
+
+        if tab_name == "advanced":
+            self.advanced_workspace_page.pack(fill="x")
+        else:
+            self.main_workspace_page.pack(fill="x")
 
     def _build_advanced_panel(self, parent: tk.Widget) -> None:
         self.advanced_panel = self._make_panel(parent)
@@ -786,6 +930,15 @@ class PresenceApp:
         self.name_count.pack(side="left")
         self.details_count.pack(side="left", padx=(14, 0))
         self.state_count.pack(side="left", padx=(14, 0))
+
+        self._segmented_control(
+            self.story_panel,
+            "Activity type",
+            self.activity_type_var,
+            list(ACTIVITY_TYPE_OPTIONS.keys()),
+            "This decides whether Discord says Playing, Listening, Watching, or Competing.",
+            accent_map=ACTIVITY_ACCENTS,
+        )
 
     def _build_links_panel(self, parent: tk.Widget) -> None:
         self.links_panel = self._make_panel(parent)

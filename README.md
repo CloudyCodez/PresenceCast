@@ -5,6 +5,7 @@ PresenceCast is a Windows desktop utility for shaping Discord Rich Presence with
 ## Features
 
 - Studio-style UI with a richer live Discord card preview
+- Beginner-friendly `Main` workspace plus a separate `Advanced` workspace
 - Custom activity name, details, and state through Discord RPC
 - Activity type and status display mode controls
 - Static, elapsed, and countdown timing modes
