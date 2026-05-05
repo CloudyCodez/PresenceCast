@@ -9,12 +9,14 @@ PresenceCast is a Windows desktop utility for shaping Discord Rich Presence with
 - Custom activity name, details, and state through Discord RPC
 - Activity type and status display mode controls
 - Static, elapsed, and countdown timing modes
+- Expanded day/hour/minute timer shaping for both elapsed and countdown cards
 - Party context with current/max sizing plus session identifiers
 - Join, spectate, and match secret fields for advanced social flows
 - Activity-specific artwork for `Playing`, `Listening`, `Watching`, and `Competing`
 - Default mascot badge on every activity
 - Emoji-aware artwork override for common gaming, music, and watching emojis
 - Manual image overrides using asset keys or external image URLs
+- Built-in multi-source quick art search with in-app preview cards
 - Up to two custom Discord buttons
 - Field URL support for `details`, `state`, large art, and badge art
 - Built-in scene presets
@@ -53,6 +55,12 @@ PresenceCast now sends:
 - optional party metadata, timers, and session secrets when you fill them in
 - up to two optional link buttons when you fill them in
 - optional field URLs for richer clickable surfaces
+
+The Main tab now includes a richer timer editor with day, hour, and minute fields, plus quick shortcuts for common elapsed and countdown ranges.
+
+The Main tab also includes `Quick Art`, which can search across `Broad`, `Web`, `Openverse`, and `Wikimedia` sources with different lenses like `Illustration`, `Wallpaper`, `Poster`, and `Cover`. PresenceCast expands mood and style queries automatically so fuzzy searches like `anime sleepy` or `rainy coding wallpaper` have a better chance of landing something useful.
+
+When you apply an image, PresenceCast uses it as the large Discord image URL. You should still verify the source license before using art outside your own private status setup.
 
 If `Auto-match art from emojis` is enabled, PresenceCast can switch the artwork automatically when your text includes common cues like `🎮`, `🎧`, `🎵`, `📺`, `🎬`, or `👀`.
 

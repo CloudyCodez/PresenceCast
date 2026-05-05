@@ -1,15 +1,19 @@
 import json
 import math
 import os
+import re
 import secrets
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 import webbrowser
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -28,7 +32,7 @@ DEFAULT_CONFIG = {
     "playing_image_key": "chibi_cloud_playing",
     "playing_image_text": "PresenceCast | Playing",
     "listening_image_key": "chibi_cloud_listening",
-    "listening_image_text": "PresenceCast | Listening",
+    "listening_image_text": "Listening",
     "watching_image_key": "chibi_cloud_watching",
     "watching_image_text": "PresenceCast | Watching",
     "competing_image_key": "",
@@ -37,11 +41,19 @@ DEFAULT_CONFIG = {
 }
 APP_NAME = "PresenceCast 2.0"
 TOOL_LABEL = "Presence Studio"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 GITHUB_REPOSITORY = "CloudyCodez/PresenceCast"
 RELEASE_ASSET_NAME = "PresenceCast.exe"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
+OPENVERSE_IMAGE_API = "https://api.openverse.org/v1/images/"
+WIKIMEDIA_COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+BING_IMAGE_SEARCH_URL = "https://www.bing.com/images/search"
+MAX_TIMER_MINUTES = 525600
+ART_SEARCH_RESULT_LIMIT = 8
+ART_SEARCH_PROVIDER_OPTIONS = ("Broad", "Web", "Openverse", "Wikimedia")
+ART_SEARCH_LENS_OPTIONS = ("Balanced", "Illustration", "Wallpaper", "Poster", "Cover")
+ART_STOPWORDS = {"a", "an", "and", "art", "for", "image", "mood", "of", "the", "to"}
 
 PALETTE = {
     "window": "#07111A",
@@ -251,6 +263,18 @@ BRAND_THEMES = [
 ]
 
 
+@dataclass(slots=True)
+class ArtSearchResult:
+    provider: str
+    title: str
+    creator: str
+    license_label: str
+    thumbnail_url: str
+    asset_url: str
+    source_url: str
+    match_note: str = ""
+
+
 def get_runtime_dirs() -> tuple[Path, Path]:
     exe_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     bundle_dir = Path(getattr(sys, "_MEIPASS", exe_dir))
@@ -336,10 +360,18 @@ class PresenceApp:
         self.status_var = tk.StringVar(value="PresenceCast 2.0 is ready to shape a richer Discord profile.")
         self.update_status_var = tk.StringVar(value=f"Version {APP_VERSION}")
         self.active_workspace_tab = tk.StringVar(value="main")
+        self.client_id_var = tk.StringVar(value=self.client_id)
         self.display_mode_var = tk.StringVar(value="Show activity name")
         self.activity_type_var = tk.StringVar(value="Playing")
         self.timer_mode_var = tk.StringVar(value="Elapsed")
         self.duration_var = tk.StringVar(value="45")
+        self.elapsed_offset_var = tk.StringVar(value="0")
+        self.elapsed_days_var = tk.StringVar(value="0")
+        self.elapsed_hours_var = tk.StringVar(value="0")
+        self.elapsed_minutes_var = tk.StringVar(value="0")
+        self.countdown_days_var = tk.StringVar(value="0")
+        self.countdown_hours_var = tk.StringVar(value="0")
+        self.countdown_minutes_var = tk.StringVar(value="45")
         self.party_enabled_var = tk.BooleanVar(value=False)
         self.party_current_var = tk.StringVar(value="1")
         self.party_max_var = tk.StringVar(value="4")
@@ -348,11 +380,14 @@ class PresenceApp:
         self.spectate_secret_var = tk.StringVar()
         self.match_secret_var = tk.StringVar()
         self.instance_var = tk.BooleanVar(value=True)
-        self.show_advanced_var = tk.BooleanVar(value=False)
         self.manual_large_image_var = tk.StringVar()
         self.manual_large_text_var = tk.StringVar()
         self.manual_small_image_var = tk.StringVar()
         self.manual_small_text_var = tk.StringVar()
+        self.art_search_provider_var = tk.StringVar(value="Broad")
+        self.art_search_lens_var = tk.StringVar(value="Balanced")
+        self.art_search_query_var = tk.StringVar()
+        self.art_search_status_var = tk.StringVar(value="Search for a quick activity image or keep the built-in Cloud art.")
         self.emoji_asset_override_var = tk.BooleanVar(
             value=bool(self.config.get("emoji_asset_override", DEFAULT_CONFIG["emoji_asset_override"]))
         )
@@ -364,6 +399,12 @@ class PresenceApp:
         self._mousewheel_bound = False
         self.update_info: dict[str, str] | None = None
         self.update_check_in_progress = False
+        self.art_search_results: list[ArtSearchResult] = []
+        self.remote_preview_cache: dict[tuple[str, int, int], ImageTk.PhotoImage] = {}
+        self.art_search_in_progress = False
+
+        self._set_elapsed_offset_minutes(self._safe_positive_int(self.elapsed_offset_var.get(), default=0, minimum=0, maximum=MAX_TIMER_MINUTES))
+        self._set_countdown_minutes_total(self._safe_positive_int(self.duration_var.get(), default=45, minimum=1, maximum=MAX_TIMER_MINUTES))
 
         self._apply_icon()
         self._build_ui()
@@ -655,7 +696,10 @@ class PresenceApp:
 
     def _build_main_workspace_page(self, parent: tk.Widget) -> None:
         self._build_beginner_intro(parent)
+        self._build_setup_panel(parent)
         self._build_story_panel(parent)
+        self._build_timer_panel(parent)
+        self._build_quick_art_panel(parent)
         self._build_profiles_panel(parent)
 
     def _build_advanced_workspace_page(self, parent: tk.Widget) -> None:
@@ -720,6 +764,33 @@ class PresenceApp:
                 justify="left",
             ).pack(anchor="w")
 
+    def _build_setup_panel(self, parent: tk.Widget) -> None:
+        self.setup_panel = self._make_panel(parent, bg=PALETTE["panel_alt"])
+        self.setup_panel.pack(fill="x", pady=(0, 16))
+        self._section_heading(self.setup_panel, "Discord Setup").pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(
+            self.setup_panel,
+            text="Paste your Discord Application ID here so you do not have to edit config files manually. You only need to do this once.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_alt"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        row = tk.Frame(self.setup_panel, bg=PALETTE["panel_alt"])
+        row.pack(fill="x", padx=20, pady=(0, 18))
+        row.grid_columnconfigure(0, weight=1)
+        self._compact_field(
+            row,
+            "Discord Application ID",
+            self.client_id_var,
+            "123456789012345678",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self._action_button(row, "Save ID", self.save_client_id, PALETTE["gold"], PALETTE["ink"]).grid(
+            row=0, column=1, sticky="se"
+        )
+
     def _switch_workspace_tab(self, tab_name: str) -> None:
         self.active_workspace_tab.set(tab_name)
         self.main_workspace_page.pack_forget()
@@ -740,151 +811,6 @@ class PresenceApp:
             self.advanced_workspace_page.pack(fill="x")
         else:
             self.main_workspace_page.pack(fill="x")
-
-    def _build_advanced_panel(self, parent: tk.Widget) -> None:
-        self.advanced_panel = self._make_panel(parent)
-        self.advanced_panel.pack(fill="x", pady=(16, 0))
-        top = tk.Frame(self.advanced_panel, bg=PALETTE["panel"])
-        top.pack(fill="x", padx=20, pady=(18, 10))
-        tk.Label(
-            top,
-            text="Advanced",
-            font=("Bahnschrift SemiBold", 18),
-            fg=PALETTE["text"],
-            bg=PALETTE["panel"],
-        ).pack(side="left")
-        self.advanced_toggle_button = self._action_button(
-            top,
-            "Show",
-            self._toggle_advanced_panel,
-            PALETTE["panel_soft"],
-            PALETTE["text"],
-        )
-        self.advanced_toggle_button.pack(side="right")
-
-        tk.Label(
-            self.advanced_panel,
-            text="Optional controls for buttons, art, timing, and party data.",
-            font=("Segoe UI", 10),
-            fg=PALETTE["muted"],
-            bg=PALETTE["panel"],
-        ).pack(anchor="w", padx=20, pady=(0, 12))
-
-        self.advanced_content = tk.Frame(self.advanced_panel, bg=PALETTE["panel"])
-
-        self._segmented_control(
-            self.advanced_content,
-            "Activity type",
-            self.activity_type_var,
-            list(ACTIVITY_TYPE_OPTIONS.keys()),
-            "Choose the verb Discord shows for this presence.",
-            accent_map=ACTIVITY_ACCENTS,
-        )
-        self._segmented_control(
-            self.advanced_content,
-            "Status display mode",
-            self.display_mode_var,
-            list(DISPLAY_MODE_OPTIONS.keys()),
-            "Controls the compact line in Discord's status strip.",
-        )
-        self._segmented_control(
-            self.advanced_content,
-            "Timing mode",
-            self.timer_mode_var,
-            list(TIMER_MODES),
-            "Use elapsed for 'started at', countdown for an end time, or static for no timer.",
-        )
-
-        timing_row = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
-        timing_row.pack(fill="x", padx=20, pady=(0, 10))
-        self._compact_field(timing_row, "Countdown duration (minutes)", self.duration_var, "45").pack(fill="x")
-
-        buttons_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
-        buttons_grid.pack(fill="x", padx=20, pady=(0, 8))
-        buttons_grid.grid_columnconfigure(0, weight=1)
-        buttons_grid.grid_columnconfigure(1, weight=1)
-        self._compact_field(buttons_grid, "Primary button label", self.primary_button_label_var, "Project").grid(
-            row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
-        )
-        self._compact_field(
-            buttons_grid, "Primary button URL", self.primary_button_url_var, "https://example.com/project"
-        ).grid(row=0, column=1, sticky="ew", pady=(0, 10))
-        self._compact_field(buttons_grid, "Secondary button label", self.secondary_button_label_var, "Community").grid(
-            row=1, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
-        )
-        self._compact_field(
-            buttons_grid, "Secondary button URL", self.secondary_button_url_var, "https://discord.gg/your-room"
-        ).grid(row=1, column=1, sticky="ew", pady=(0, 10))
-
-        self.party_toggle = tk.Checkbutton(
-            self.advanced_content,
-            text="Enable party information",
-            variable=self.party_enabled_var,
-            font=("Segoe UI", 10),
-            fg=PALETTE["text"],
-            bg=PALETTE["panel"],
-            activeforeground=PALETTE["text"],
-            activebackground=PALETTE["panel"],
-            selectcolor=PALETTE["input"],
-            highlightthickness=0,
-        )
-        self.party_toggle.pack(anchor="w", padx=20, pady=(0, 10))
-
-        party_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
-        party_grid.pack(fill="x", padx=20, pady=(0, 8))
-        party_grid.grid_columnconfigure(0, weight=1)
-        party_grid.grid_columnconfigure(1, weight=1)
-        self._compact_field(party_grid, "Party current", self.party_current_var, "1").grid(
-            row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
-        )
-        self._compact_field(party_grid, "Party max", self.party_max_var, "4").grid(
-            row=0, column=1, sticky="ew", pady=(0, 10)
-        )
-
-        art_grid = tk.Frame(self.advanced_content, bg=PALETTE["panel"])
-        art_grid.pack(fill="x", padx=20, pady=(0, 18))
-        art_grid.grid_columnconfigure(0, weight=1)
-        art_grid.grid_columnconfigure(1, weight=1)
-        self._compact_field(
-            art_grid, "Large image key or URL", self.manual_large_image_var, "chibi_cloud_playing"
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 10))
-        self._compact_field(art_grid, "Large image tooltip", self.manual_large_text_var, "PresenceCast highlight").grid(
-            row=0, column=1, sticky="ew", pady=(0, 10)
-        )
-        self._compact_field(art_grid, "Badge image key or URL", self.manual_small_image_var, "chibi_cloud").grid(
-            row=1, column=0, sticky="ew", padx=(0, 10), pady=(0, 10)
-        )
-        self._compact_field(art_grid, "Badge tooltip", self.manual_small_text_var, "PresenceCast badge").grid(
-            row=1, column=1, sticky="ew", pady=(0, 10)
-        )
-
-        self.emoji_asset_toggle = tk.Checkbutton(
-            self.advanced_content,
-            text="Auto-match art from emoji cues",
-            variable=self.emoji_asset_override_var,
-            font=("Segoe UI", 10),
-            fg=PALETTE["text"],
-            bg=PALETTE["panel"],
-            activeforeground=PALETTE["text"],
-            activebackground=PALETTE["panel"],
-            selectcolor=PALETTE["input"],
-            highlightthickness=0,
-        )
-        self.emoji_asset_toggle.pack(anchor="w", padx=20, pady=(0, 18))
-
-        self._toggle_advanced_panel(force=False)
-
-    def _toggle_advanced_panel(self, force: bool | None = None) -> None:
-        visible = self.show_advanced_var.get() if force is None else force
-        if force is None:
-            visible = not visible
-        self.show_advanced_var.set(visible)
-        if visible:
-            self.advanced_content.pack(fill="x")
-            self.advanced_toggle_button.configure(text="Hide")
-        else:
-            self.advanced_content.pack_forget()
-            self.advanced_toggle_button.configure(text="Show")
 
     def _build_story_panel(self, parent: tk.Widget) -> None:
         self.story_panel = self._make_panel(parent)
@@ -939,6 +865,128 @@ class PresenceApp:
             "This decides whether Discord says Playing, Listening, Watching, or Competing.",
             accent_map=ACTIVITY_ACCENTS,
         )
+
+    def _build_timer_panel(self, parent: tk.Widget) -> None:
+        self.timer_panel = self._make_panel(parent, bg=PALETTE["panel_alt"])
+        self.timer_panel.pack(fill="x", pady=(16, 0))
+        self._section_heading(self.timer_panel, "Timer").pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(
+            self.timer_panel,
+            text="Choose whether the card should show no timer, an elapsed timer, or a countdown. You can now shape longer spans with separate day, hour, and minute controls instead of getting stuck at a one-week ceiling.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel_alt"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        self._segmented_control(
+            self.timer_panel,
+            "Timing mode",
+            self.timer_mode_var,
+            list(TIMER_MODES),
+            "Elapsed uses the start offset below. Countdown uses the target duration below.",
+        )
+
+        timer_grid = tk.Frame(self.timer_panel, bg=PALETTE["panel_alt"])
+        timer_grid.pack(fill="x", padx=20, pady=(0, 18))
+        timer_grid.grid_columnconfigure(0, weight=1)
+        timer_grid.grid_columnconfigure(1, weight=1)
+
+        self._timer_triplet_editor(
+            timer_grid,
+            "Elapsed start offset",
+            "Make it look like the activity started earlier.",
+            self.elapsed_days_var,
+            self.elapsed_hours_var,
+            self.elapsed_minutes_var,
+            [("Now", 0), ("15m", 15), ("1h", 60), ("6h", 360), ("1d", 1440)],
+            self._set_elapsed_offset_minutes,
+        ).grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self._timer_triplet_editor(
+            timer_grid,
+            "Countdown length",
+            "Set how much time remains for a live countdown.",
+            self.countdown_days_var,
+            self.countdown_hours_var,
+            self.countdown_minutes_var,
+            [("30m", 30), ("2h", 120), ("8h", 480), ("1d", 1440), ("3d", 4320)],
+            self._set_countdown_minutes_total,
+        ).grid(row=0, column=1, sticky="nsew")
+
+    def _build_quick_art_panel(self, parent: tk.Widget) -> None:
+        self.quick_art_panel = self._make_panel(parent)
+        self.quick_art_panel.pack(fill="x", pady=(16, 0))
+        self._section_heading(self.quick_art_panel, "Quick Art").pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(
+            self.quick_art_panel,
+            text="Popular RPC tools win by making art fast. PresenceCast now searches multiple sources, broadens mood/style queries, and lets you tune whether you want balanced results, illustration-heavy results, posters, wallpapers, or cover-style art.",
+            font=("Segoe UI", 10),
+            fg=PALETTE["muted"],
+            bg=PALETTE["panel"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        self._segmented_control(
+            self.quick_art_panel,
+            "Search source",
+            self.art_search_provider_var,
+            list(ART_SEARCH_PROVIDER_OPTIONS),
+            "Broad blends sources together. Web is widest, Openverse stays openly licensed, and Wikimedia leans encyclopedic.",
+        )
+        self._segmented_control(
+            self.quick_art_panel,
+            "Search lens",
+            self.art_search_lens_var,
+            list(ART_SEARCH_LENS_OPTIONS),
+            "Balanced is the default. The other lenses widen your query toward the visual style you actually want.",
+        )
+
+        search_row = tk.Frame(self.quick_art_panel, bg=PALETTE["panel"])
+        search_row.pack(fill="x", padx=20, pady=(0, 12))
+        search_row.grid_columnconfigure(0, weight=1)
+        self._compact_field(
+            search_row,
+            "Search query",
+            self.art_search_query_var,
+            "anime sleepy | vaporwave coding wallpaper | rainy album cover",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self._action_button(
+            search_row,
+            "Use Activity",
+            self.fill_art_query_from_activity,
+            PALETTE["panel_soft"],
+            PALETTE["text"],
+        ).grid(row=0, column=1, sticky="se", padx=(0, 10))
+        self._action_button(
+            search_row,
+            "Search",
+            self.search_activity_art,
+            PALETTE["gold"],
+            PALETTE["ink"],
+        ).grid(row=0, column=2, sticky="se", padx=(0, 10))
+        self._action_button(
+            search_row,
+            "Use Cloud Default",
+            self.clear_manual_large_art,
+            PALETTE["panel_soft"],
+            PALETTE["text"],
+        ).grid(row=0, column=3, sticky="se")
+
+        tk.Label(
+            self.quick_art_panel,
+            textvariable=self.art_search_status_var,
+            font=("Segoe UI", 9),
+            fg=PALETTE["soft"],
+            bg=PALETTE["panel"],
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        self.quick_art_results = tk.Frame(self.quick_art_panel, bg=PALETTE["panel"])
+        self.quick_art_results.pack(fill="x", padx=20, pady=(0, 18))
+        self._render_art_search_results()
 
     def _build_links_panel(self, parent: tk.Widget) -> None:
         self.links_panel = self._make_panel(parent)
@@ -1108,24 +1156,13 @@ class PresenceApp:
         self._section_heading(self.mechanics_panel, "Session Dynamics").pack(anchor="w", padx=20, pady=(18, 6))
         tk.Label(
             self.mechanics_panel,
-            text="Current Discord docs emphasize actionable presence: timings, party state, and join context make profiles dramatically more useful.",
+            text="Discord presence gets more useful when party state and join context are accurate. The timer now lives on the Main tab so this advanced page can stay focused on social mechanics.",
             font=("Segoe UI", 10),
             fg=PALETTE["muted"],
             bg=PALETTE["panel"],
             wraplength=560,
             justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 14))
-
-        self._segmented_control(
-            self.mechanics_panel,
-            "Timing mode",
-            self.timer_mode_var,
-            list(TIMER_MODES),
-            "Elapsed starts now. Countdown ends after the duration you set.",
-        )
-
-        duration_wrap = self._compact_field(self.mechanics_panel, "Countdown duration (minutes)", self.duration_var, "45")
-        duration_wrap.pack(fill="x", padx=20, pady=(0, 10))
 
         self.party_toggle = tk.Checkbutton(
             self.mechanics_panel,
@@ -1190,7 +1227,7 @@ class PresenceApp:
         self._section_heading(self.art_panel, "Art Direction").pack(anchor="w", padx=20, pady=(18, 6))
         tk.Label(
             self.art_panel,
-            text="Discord recommends expressive 1024x1024 art and consistent large imagery across a party. You can keep the smart defaults, override them with asset keys, or point at external image URLs.",
+            text="Discord recommends expressive 1024x1024 art and consistent large imagery across a party. The Main tab now handles quick image discovery; use this panel when you want precise asset keys, custom external URLs, or badge overrides.",
             font=("Segoe UI", 10),
             fg=PALETTE["muted"],
             bg=PALETTE["panel"],
@@ -1529,20 +1566,24 @@ class PresenceApp:
         tk.Label(card, text=title.upper(), font=("Segoe UI", 8), fg=accent, bg=PALETTE["surface"]).pack(
             anchor="w", padx=12, pady=(10, 3)
         )
-        tk.Label(
+        headline_label = tk.Label(
             card,
             text=headline,
             font=("Bahnschrift SemiBold", 15),
             fg=PALETTE["text"],
             bg=PALETTE["surface"],
-        ).pack(anchor="w", padx=12)
-        tk.Label(
+        )
+        headline_label.pack(anchor="w", padx=12)
+        caption_label = tk.Label(
             card,
             text=caption,
             font=("Segoe UI", 9),
             fg=PALETTE["muted"],
             bg=PALETTE["surface"],
-        ).pack(anchor="w", padx=12, pady=(4, 10))
+        )
+        caption_label.pack(anchor="w", padx=12, pady=(4, 10))
+        card.headline_label = headline_label  # type: ignore[attr-defined]
+        card.caption_label = caption_label  # type: ignore[attr-defined]
         return card
 
     def _summary_card(self, parent: tk.Widget, title: str) -> dict[str, tk.Widget]:
@@ -1619,6 +1660,50 @@ class PresenceApp:
         )
         return frame
 
+    def _timer_triplet_editor(
+        self,
+        parent: tk.Widget,
+        title: str,
+        description: str,
+        days_var: tk.StringVar,
+        hours_var: tk.StringVar,
+        minutes_var: tk.StringVar,
+        shortcuts: list[tuple[str, int]],
+        apply_minutes: object,
+    ) -> tk.Frame:
+        frame = tk.Frame(parent, bg=parent.cget("bg"), highlightbackground=PALETTE["line"], highlightthickness=1)
+        tk.Label(frame, text=title, font=("Segoe UI Semibold", 11), fg=PALETTE["text"], bg=parent.cget("bg")).pack(
+            anchor="w", padx=14, pady=(14, 4)
+        )
+        tk.Label(frame, text=description, font=("Segoe UI", 9), fg=PALETTE["soft"], bg=parent.cget("bg")).pack(
+            anchor="w", padx=14, pady=(0, 10)
+        )
+
+        fields = tk.Frame(frame, bg=parent.cget("bg"))
+        fields.pack(fill="x", padx=14)
+        for index, (label, variable, hint) in enumerate(
+            (("Days", days_var, "0"), ("Hours", hours_var, "0-23"), ("Minutes", minutes_var, "0-59"))
+        ):
+            fields.grid_columnconfigure(index, weight=1)
+            self._compact_field(fields, label, variable, hint).grid(
+                row=0,
+                column=index,
+                sticky="ew",
+                padx=(0, 10 if index < 2 else 0),
+            )
+
+        shortcuts_row = tk.Frame(frame, bg=parent.cget("bg"))
+        shortcuts_row.pack(fill="x", padx=14, pady=(12, 14))
+        for index, (label, total_minutes) in enumerate(shortcuts):
+            self._action_button(
+                shortcuts_row,
+                label,
+                lambda value=total_minutes: apply_minutes(value),
+                PALETTE["panel_soft"],
+                PALETTE["text"],
+            ).pack(side="left", padx=(0, 8 if index < len(shortcuts) - 1 else 0))
+        return frame
+
     def _action_button(self, parent: tk.Widget, text: str, command: object, bg: str, fg: str) -> tk.Button:
         return tk.Button(
             parent,
@@ -1692,7 +1777,12 @@ class PresenceApp:
             self.display_mode_var,
             self.activity_type_var,
             self.timer_mode_var,
-            self.duration_var,
+            self.elapsed_days_var,
+            self.elapsed_hours_var,
+            self.elapsed_minutes_var,
+            self.countdown_days_var,
+            self.countdown_hours_var,
+            self.countdown_minutes_var,
             self.party_current_var,
             self.party_max_var,
             self.party_id_var,
@@ -1710,10 +1800,90 @@ class PresenceApp:
         self.party_enabled_var.trace_add("write", self._refresh_preview)
         self.instance_var.trace_add("write", self._refresh_preview)
         self.emoji_asset_override_var.trace_add("write", self._refresh_preview)
+        self.client_id_var.trace_add("write", self._refresh_client_status)
+        for variable in (
+            self.elapsed_days_var,
+            self.elapsed_hours_var,
+            self.elapsed_minutes_var,
+            self.countdown_days_var,
+            self.countdown_hours_var,
+            self.countdown_minutes_var,
+        ):
+            variable.trace_add("write", self._sync_timer_legacy_fields)
 
         self.name_entry.focus_set()
+        self._sync_timer_legacy_fields()
         self._refresh_segmented_controls()
+        self._refresh_client_status()
         self._update_counts()
+
+    def _sync_timer_legacy_fields(self, *_args: object) -> None:
+        self.elapsed_offset_var.set(str(self._triplet_total_minutes(
+            self.elapsed_days_var,
+            self.elapsed_hours_var,
+            self.elapsed_minutes_var,
+        )))
+        self.duration_var.set(str(self._triplet_total_minutes(
+            self.countdown_days_var,
+            self.countdown_hours_var,
+            self.countdown_minutes_var,
+            minimum=1,
+        )))
+
+    def _triplet_total_minutes(
+        self,
+        days_var: tk.StringVar,
+        hours_var: tk.StringVar,
+        minutes_var: tk.StringVar,
+        minimum: int = 0,
+    ) -> int:
+        days = self._safe_positive_int(days_var.get().strip(), default=0, minimum=0, maximum=365)
+        hours = self._safe_positive_int(hours_var.get().strip(), default=0, minimum=0, maximum=23)
+        minutes = self._safe_positive_int(minutes_var.get().strip(), default=0, minimum=0, maximum=59)
+        return max(minimum, min(MAX_TIMER_MINUTES, (days * 1440) + (hours * 60) + minutes))
+
+    def _split_minutes(self, total_minutes: int) -> tuple[int, int, int]:
+        total = max(0, min(MAX_TIMER_MINUTES, total_minutes))
+        days, remainder = divmod(total, 1440)
+        hours, minutes = divmod(remainder, 60)
+        return days, hours, minutes
+
+    def _set_elapsed_offset_minutes(self, total_minutes: int) -> None:
+        days, hours, minutes = self._split_minutes(total_minutes)
+        self.elapsed_days_var.set(str(days))
+        self.elapsed_hours_var.set(str(hours))
+        self.elapsed_minutes_var.set(str(minutes))
+        self.elapsed_offset_var.set(str(max(0, total_minutes)))
+
+    def _set_countdown_minutes_total(self, total_minutes: int) -> None:
+        safe_minutes = max(1, min(MAX_TIMER_MINUTES, total_minutes))
+        days, hours, minutes = self._split_minutes(safe_minutes)
+        self.countdown_days_var.set(str(days))
+        self.countdown_hours_var.set(str(hours))
+        self.countdown_minutes_var.set(str(minutes))
+        self.duration_var.set(str(safe_minutes))
+
+    def _format_minutes_span(self, total_minutes: int) -> str:
+        days, hours, minutes = self._split_minutes(total_minutes)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes or not parts:
+            parts.append(f"{minutes}m")
+        return " ".join(parts[:3])
+
+    def _refresh_client_status(self, *_args: object) -> None:
+        self.client_id = self.client_id_var.get().strip()
+        if not hasattr(self, "header_card_primary"):
+            return
+        accent = PALETTE["mint"] if self.client_id.isdigit() else PALETTE["gold"]
+        headline = "Loaded" if self.client_id.isdigit() else "Missing ID"
+        caption = self.client_id if self.client_id else "Enter your app ID below"
+        self.header_card_primary.headline_label.configure(text=headline)  # type: ignore[attr-defined]
+        self.header_card_primary.caption_label.configure(text=caption)  # type: ignore[attr-defined]
+        self.header_card_primary.configure(highlightbackground=accent)
 
     def _update_counts(self, *_args: object) -> None:
         self.name_count.configure(text=f"Name {min(len(self.name_var.get()), 128)} / 128")
@@ -1934,18 +2104,18 @@ class PresenceApp:
         manual_key = self.manual_large_image_var.get().strip()
         manual_text = self.manual_large_text_var.get().strip()
         if manual_key:
-            return manual_key[:128], (manual_text or self.large_image_text)[:128]
+            return self._trim_asset_reference(manual_key), (manual_text or self.large_image_text)[:128]
         activity_label = self._resolve_art_activity_label()
         key = self.activity_image_keys.get(activity_label, "").strip() or self.large_image_key
         text = self.activity_image_texts.get(activity_label, "").strip() or self.large_image_text
-        return key[:128], text[:128]
+        return self._trim_asset_reference(key), text[:128]
 
     def _resolved_small_asset(self) -> tuple[str | None, str | None]:
         manual_key = self.manual_small_image_var.get().strip()
         manual_text = self.manual_small_text_var.get().strip()
         key = manual_key or self.small_image_key
         text = manual_text or self.small_image_text
-        return (key[:128] if key else None), (text[:128] if key and text else None)
+        return (self._trim_asset_reference(key) if key else None), (text[:128] if key and text else None)
 
     def _resolve_preview_art(self) -> tuple[Path | None, str]:
         manual = self.manual_large_image_var.get().strip()
@@ -1990,9 +2160,21 @@ class PresenceApp:
         if mode == "Static":
             return "Static presence"
         if mode == "Elapsed":
-            return "Elapsed from now"
-        duration = self._safe_positive_int(self.duration_var.get().strip(), default=45, minimum=1, maximum=1440)
-        return f"Countdown {duration}m"
+            offset = self._triplet_total_minutes(
+                self.elapsed_days_var,
+                self.elapsed_hours_var,
+                self.elapsed_minutes_var,
+            )
+            if offset <= 0:
+                return "Elapsed from now"
+            return f"Elapsed from {self._format_minutes_span(offset)} ago"
+        duration = self._triplet_total_minutes(
+            self.countdown_days_var,
+            self.countdown_hours_var,
+            self.countdown_minutes_var,
+            minimum=1,
+        )
+        return f"Countdown {self._format_minutes_span(duration)}"
 
     def _party_preview_text(self) -> str:
         if not self.party_enabled_var.get():
@@ -2011,7 +2193,8 @@ class PresenceApp:
         self.activity_type_var.set(str(preset.get("type", "Playing")))
         self.display_mode_var.set(str(preset.get("display_mode", "Show activity name")))
         self.timer_mode_var.set(str(preset.get("timer_mode", "Elapsed")))
-        self.duration_var.set(str(preset.get("duration", "45")))
+        self._set_countdown_minutes_total(self._payload_countdown_minutes(preset))
+        self._set_elapsed_offset_minutes(self._payload_elapsed_minutes(preset))
         self.party_enabled_var.set(bool(preset.get("party_enabled", False)))
         self.party_current_var.set(str(preset.get("party_current", "1")))
         self.party_max_var.set(str(preset.get("party_max", "4")))
@@ -2097,6 +2280,13 @@ class PresenceApp:
             "activity_type": self.activity_type_var.get(),
             "timer_mode": self.timer_mode_var.get(),
             "duration": self.duration_var.get().strip(),
+            "elapsed_offset": self.elapsed_offset_var.get().strip(),
+            "countdown_days": self.countdown_days_var.get().strip(),
+            "countdown_hours": self.countdown_hours_var.get().strip(),
+            "countdown_minutes": self.countdown_minutes_var.get().strip(),
+            "elapsed_days": self.elapsed_days_var.get().strip(),
+            "elapsed_hours": self.elapsed_hours_var.get().strip(),
+            "elapsed_minutes": self.elapsed_minutes_var.get().strip(),
             "party_enabled": self.party_enabled_var.get(),
             "party_current": self.party_current_var.get().strip(),
             "party_max": self.party_max_var.get().strip(),
@@ -2128,7 +2318,8 @@ class PresenceApp:
         self.display_mode_var.set(str(payload.get("display_mode", "Show activity name")))
         self.activity_type_var.set(str(payload.get("activity_type", "Playing")))
         self.timer_mode_var.set(str(payload.get("timer_mode", "Elapsed")))
-        self.duration_var.set(str(payload.get("duration", "45")))
+        self._set_countdown_minutes_total(self._payload_countdown_minutes(payload))
+        self._set_elapsed_offset_minutes(self._payload_elapsed_minutes(payload))
         self.party_enabled_var.set(bool(payload.get("party_enabled", False)))
         self.party_current_var.set(str(payload.get("party_current", "1")))
         self.party_max_var.set(str(payload.get("party_max", "4")))
@@ -2152,6 +2343,22 @@ class PresenceApp:
         self.small_url_var.set(str(payload.get("small_url", "")))
         self._refresh_preview()
 
+    def _payload_elapsed_minutes(self, payload: dict[str, object]) -> int:
+        if any(key in payload for key in ("elapsed_days", "elapsed_hours", "elapsed_minutes")):
+            return self._payload_triplet_minutes(payload, "elapsed", minimum=0)
+        return self._safe_positive_int(str(payload.get("elapsed_offset", "0")).strip(), default=0, minimum=0, maximum=MAX_TIMER_MINUTES)
+
+    def _payload_countdown_minutes(self, payload: dict[str, object]) -> int:
+        if any(key in payload for key in ("countdown_days", "countdown_hours", "countdown_minutes")):
+            return self._payload_triplet_minutes(payload, "countdown", minimum=1)
+        return self._safe_positive_int(str(payload.get("duration", "45")).strip(), default=45, minimum=1, maximum=MAX_TIMER_MINUTES)
+
+    def _payload_triplet_minutes(self, payload: dict[str, object], prefix: str, minimum: int) -> int:
+        days = self._safe_positive_int(str(payload.get(f"{prefix}_days", "0")).strip(), default=0, minimum=0, maximum=365)
+        hours = self._safe_positive_int(str(payload.get(f"{prefix}_hours", "0")).strip(), default=0, minimum=0, maximum=23)
+        minutes = self._safe_positive_int(str(payload.get(f"{prefix}_minutes", "0")).strip(), default=0, minimum=0, maximum=59)
+        return max(minimum, min(MAX_TIMER_MINUTES, (days * 1440) + (hours * 60) + minutes))
+
     def _load_profiles(self) -> dict[str, dict[str, object]]:
         if not PROFILES_PATH.exists():
             return {}
@@ -2167,6 +2374,24 @@ class PresenceApp:
     def _save_profiles(self) -> None:
         with PROFILES_PATH.open("w", encoding="utf-8") as file:
             json.dump(self.profiles, file, indent=2, sort_keys=True)
+
+    def save_client_id(self) -> None:
+        client_id = self.client_id_var.get().strip()
+        if not client_id.isdigit():
+            messagebox.showerror("Invalid Application ID", "Enter a valid numeric Discord Application ID.")
+            return
+        updated_config = self.config.copy()
+        updated_config["client_id"] = client_id
+        try:
+            with CONFIG_PATH.open("w", encoding="utf-8") as file:
+                json.dump(updated_config, file, indent=2)
+        except OSError as exc:
+            messagebox.showerror("Save Failed", f"Could not save config.json.\n\nError: {exc}")
+            return
+        self.config = updated_config
+        self.client_id = client_id
+        self._refresh_client_status()
+        self._flash_status(PALETTE["mint"], "Discord Application ID saved.")
 
     def _load_history(self) -> list[dict[str, object]]:
         if not HISTORY_PATH.exists():
@@ -2286,6 +2511,523 @@ class PresenceApp:
         self._refresh_history_panel()
         self._flash_status(PALETTE["gold"], "Recent cast history cleared.")
 
+    def fill_art_query_from_activity(self) -> None:
+        query = self._suggest_art_query()
+        self.art_search_query_var.set(query)
+        self.art_search_status_var.set(f'Ready to search "{query}".')
+
+    def _suggest_art_query(self) -> str:
+        base = self.name_var.get().strip() or self.details_var.get().strip() or self.state_var.get().strip()
+        suffix = self._default_lens_suffix()
+        if not base:
+            return suffix
+        return f"{base} {suffix}".strip()
+
+    def _default_lens_suffix(self) -> str:
+        activity = self.activity_type_var.get()
+        lens = self.art_search_lens_var.get()
+        suffix_by_lens = {
+            "Balanced": {
+                "Playing": "game art",
+                "Listening": "album art",
+                "Watching": "poster art",
+                "Competing": "esports art",
+            },
+            "Illustration": {
+                "Playing": "digital illustration",
+                "Listening": "illustration",
+                "Watching": "cinematic illustration",
+                "Competing": "action illustration",
+            },
+            "Wallpaper": {
+                "Playing": "wallpaper",
+                "Listening": "aesthetic wallpaper",
+                "Watching": "cinematic wallpaper",
+                "Competing": "gaming wallpaper",
+            },
+            "Poster": {
+                "Playing": "poster",
+                "Listening": "music poster",
+                "Watching": "movie poster",
+                "Competing": "event poster",
+            },
+            "Cover": {
+                "Playing": "cover art",
+                "Listening": "album cover",
+                "Watching": "cover art",
+                "Competing": "team cover art",
+            },
+        }
+        return suffix_by_lens.get(lens, suffix_by_lens["Balanced"]).get(activity, "digital art")
+
+    def _expanded_art_queries(self, query: str) -> list[str]:
+        normalized = " ".join(query.split())
+        if not normalized:
+            return []
+
+        lower = normalized.lower()
+        variants = [normalized]
+        suffixes = [self._default_lens_suffix()]
+        lens = self.art_search_lens_var.get()
+        if lens == "Balanced":
+            suffixes.extend(["illustration", "wallpaper", "poster", "cover art"])
+        elif lens == "Illustration":
+            suffixes.extend(["anime illustration", "digital painting", "character art"])
+        elif lens == "Wallpaper":
+            suffixes.extend(["desktop wallpaper", "phone wallpaper", "background art"])
+        elif lens == "Poster":
+            suffixes.extend(["promo poster", "cinematic poster", "vertical poster"])
+        elif lens == "Cover":
+            suffixes.extend(["album cover", "cover artwork", "single cover"])
+
+        for suffix in suffixes:
+            if suffix and suffix.lower() not in lower:
+                variants.append(f"{normalized} {suffix}")
+
+        if "anime" in lower and "illustration" not in lower:
+            variants.append(f"{normalized} anime illustration")
+        if "sleepy" in lower and "dreamy" not in lower:
+            variants.append(f"{normalized} dreamy art")
+
+        deduped = []
+        seen = set()
+        for item in variants:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped[:4]
+
+    def search_activity_art(self) -> None:
+        if self.art_search_in_progress:
+            return
+        query = self.art_search_query_var.get().strip() or self._suggest_art_query()
+        if not query:
+            self._flash_status(PALETTE["gold"], "Add a search query or activity name before looking for art.")
+            return
+
+        provider = self.art_search_provider_var.get()
+        self.art_search_in_progress = True
+        self.art_search_query_var.set(query)
+        self.art_search_status_var.set(f'Searching {provider.lower()} sources for "{query}"...')
+        self._render_art_search_results()
+
+        def worker() -> None:
+            try:
+                results = self._fetch_art_results(query, provider)
+                self.root.after(0, lambda: self._finish_art_search(query, provider, results, None))
+            except Exception as exc:
+                self.root.after(0, lambda: self._finish_art_search(query, provider, [], exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fetch_art_results(self, query: str, provider: str) -> list[ArtSearchResult]:
+        queries = self._expanded_art_queries(query)
+        results: list[ArtSearchResult] = []
+
+        if provider in {"Broad", "Openverse"}:
+            results.extend(self._collect_provider_results("Openverse", queries))
+        if provider in {"Broad", "Wikimedia"}:
+            results.extend(self._collect_provider_results("Wikimedia", queries))
+        if provider in {"Broad", "Web"}:
+            results.extend(self._collect_provider_results("Web", queries[:2]))
+
+        return self._rank_and_trim_art_results(results, query)
+
+    def _collect_provider_results(self, provider: str, queries: list[str]) -> list[ArtSearchResult]:
+        collected: list[ArtSearchResult] = []
+        for query in queries:
+            if provider == "Openverse":
+                collected.extend(self._fetch_openverse_results(query))
+            elif provider == "Wikimedia":
+                collected.extend(self._fetch_wikimedia_results(query))
+            elif provider == "Web":
+                collected.extend(self._fetch_bing_results(query))
+            if len(collected) >= ART_SEARCH_RESULT_LIMIT * 2:
+                break
+        return collected
+
+    def _fetch_openverse_results(self, query: str) -> list[ArtSearchResult]:
+        params = urllib.parse.urlencode(
+            {
+                "q": query,
+                "page_size": ART_SEARCH_RESULT_LIMIT,
+                "mature": "false",
+            }
+        )
+        request = urllib.request.Request(
+            f"{OPENVERSE_IMAGE_API}?{params}",
+            headers={"User-Agent": f"PresenceCast/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        results = []
+        for item in payload.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            asset_url = str(item.get("url", "")).strip()
+            thumbnail_url = str(item.get("thumbnail", "")).strip()
+            if not asset_url and not thumbnail_url:
+                continue
+            license_name = str(item.get("license", "")).strip().upper() or "License"
+            license_version = str(item.get("license_version", "")).strip()
+            license_label = f"{license_name} {license_version}".strip()
+            results.append(
+                ArtSearchResult(
+                    provider="Openverse",
+                    title=str(item.get("title", "")).strip() or "Untitled image",
+                    creator=str(item.get("creator", "")).strip() or "Unknown creator",
+                    license_label=license_label,
+                    thumbnail_url=thumbnail_url,
+                    asset_url=asset_url or thumbnail_url,
+                    source_url=str(item.get("foreign_landing_url", "")).strip() or asset_url or thumbnail_url,
+                    match_note=query,
+                )
+            )
+        return results
+
+    def _fetch_wikimedia_results(self, query: str) -> list[ArtSearchResult]:
+        params = urllib.parse.urlencode(
+            {
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrnamespace": "6",
+                "gsrlimit": str(ART_SEARCH_RESULT_LIMIT),
+                "prop": "imageinfo|info",
+                "iiprop": "url",
+                "iiurlwidth": "360",
+                "inprop": "url",
+            }
+        )
+        request = urllib.request.Request(
+            f"{WIKIMEDIA_COMMONS_API}?{params}",
+            headers={"User-Agent": f"PresenceCast/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        results = []
+        pages = payload.get("query", {}).get("pages", {})
+        for page in pages.values():
+            if not isinstance(page, dict):
+                continue
+            image_info = page.get("imageinfo") or []
+            if not image_info:
+                continue
+            first = image_info[0]
+            asset_url = str(first.get("url", "")).strip()
+            thumbnail_url = str(first.get("thumburl", "")).strip() or asset_url
+            source_url = str(page.get("fullurl", "")).strip() or asset_url
+            title = str(page.get("title", "")).replace("File:", "").strip() or "Wikimedia file"
+            if not asset_url:
+                continue
+            results.append(
+                ArtSearchResult(
+                    provider="Wikimedia",
+                    title=title,
+                    creator="Wikimedia Commons",
+                    license_label="Commons media",
+                    thumbnail_url=thumbnail_url,
+                    asset_url=asset_url,
+                    source_url=source_url,
+                    match_note=query,
+                )
+            )
+        return results
+
+    def _fetch_bing_results(self, query: str) -> list[ArtSearchResult]:
+        params = urllib.parse.urlencode({"q": query, "form": "HDRSC3", "first": "1"})
+        request = urllib.request.Request(
+            f"{BING_IMAGE_SEARCH_URL}?{params}",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                )
+            },
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+
+        matches = re.findall(r'm="([^"]+)"', html)
+        results = []
+        for blob in matches:
+            decoded = blob.replace("&quot;", '"').replace("&amp;", "&")
+            thumb = self._extract_jsonish_value(decoded, "turl")
+            asset = self._extract_jsonish_value(decoded, "murl")
+            source = self._extract_jsonish_value(decoded, "purl") or asset
+            title = self._extract_jsonish_value(decoded, "t") or self._extract_jsonish_value(decoded, "desc") or "Web image"
+            if not asset:
+                continue
+            results.append(
+                ArtSearchResult(
+                    provider="Web",
+                    title=title.strip(),
+                    creator="Web image search",
+                    license_label="Check source",
+                    thumbnail_url=thumb or asset,
+                    asset_url=asset,
+                    source_url=source,
+                    match_note=query,
+                )
+            )
+            if len(results) >= ART_SEARCH_RESULT_LIMIT:
+                break
+        if results:
+            return results
+
+        assets = re.findall(r'murl&quot;:&quot;(.*?)&quot;', html)
+        thumbs = re.findall(r'turl&quot;:&quot;(.*?)&quot;', html)
+        for index, asset in enumerate(assets[:ART_SEARCH_RESULT_LIMIT]):
+            cleaned_asset = bytes(asset.replace("&amp;", "&"), "utf-8").decode("unicode_escape")
+            cleaned_thumb = cleaned_asset
+            if index < len(thumbs):
+                cleaned_thumb = bytes(thumbs[index].replace("&amp;", "&"), "utf-8").decode("unicode_escape")
+            results.append(
+                ArtSearchResult(
+                    provider="Web",
+                    title=f"Web image {index + 1}",
+                    creator="Web image search",
+                    license_label="Check source",
+                    thumbnail_url=cleaned_thumb,
+                    asset_url=cleaned_asset,
+                    source_url=cleaned_asset,
+                    match_note=query,
+                )
+            )
+        return results
+
+    def _extract_jsonish_value(self, blob: str, key: str) -> str:
+        match = re.search(rf'"{re.escape(key)}":"(.*?)"', blob)
+        if not match:
+            return ""
+        return bytes(match.group(1), "utf-8").decode("unicode_escape")
+
+    def _rank_and_trim_art_results(self, results: list[ArtSearchResult], query: str) -> list[ArtSearchResult]:
+        query_terms = [term for term in re.findall(r"[a-z0-9]+", query.lower()) if term not in ART_STOPWORDS]
+        deduped: dict[str, ArtSearchResult] = {}
+        for result in results:
+            key = (result.asset_url or result.source_url).strip()
+            if not key:
+                continue
+            current = deduped.get(key)
+            if current is None or self._score_art_result(result, query_terms) > self._score_art_result(current, query_terms):
+                deduped[key] = result
+
+        ranked = sorted(
+            deduped.values(),
+            key=lambda item: self._score_art_result(item, query_terms),
+            reverse=True,
+        )
+        return ranked[:ART_SEARCH_RESULT_LIMIT]
+
+    def _score_art_result(self, result: ArtSearchResult, query_terms: list[str]) -> tuple[int, int, int]:
+        haystack = " ".join(
+            [
+                result.title.lower(),
+                result.creator.lower(),
+                result.match_note.lower(),
+                result.provider.lower(),
+            ]
+        )
+        exact_hits = sum(1 for term in query_terms if term in haystack)
+        style_bonus = 0
+        for keyword in ("anime", "sleepy", "wallpaper", "poster", "cover", "illustration"):
+            if keyword in haystack and keyword in query_terms:
+                style_bonus += 3
+        provider_bonus = {"Web": 3, "Openverse": 2, "Wikimedia": 1}.get(result.provider, 0)
+        return exact_hits, style_bonus, provider_bonus
+
+    def _finish_art_search(
+        self,
+        query: str,
+        provider: str,
+        results: list[ArtSearchResult],
+        error: Exception | None,
+    ) -> None:
+        self.art_search_in_progress = False
+        if error is not None:
+            self.art_search_results = []
+            self.art_search_status_var.set(
+                f'Art search failed for "{query}". You can still use the built-in Cloud art or try another source.'
+            )
+            self._flash_status(PALETTE["rose"], f"{provider} art search failed.")
+            self._render_art_search_results()
+            return
+
+        self.art_search_results = results
+        if results:
+            providers = ", ".join(sorted({result.provider for result in results}))
+            self.art_search_status_var.set(
+                f'Found {len(results)} image option{"s" if len(results) != 1 else ""} for "{query}" from {providers}. Check source licensing before shipping artwork publicly.'
+            )
+        else:
+            self.art_search_status_var.set(
+                f'No image results landed for "{query}". Try a broader lens or switch the source to Web or Broad.'
+            )
+        self._render_art_search_results()
+
+    def _render_art_search_results(self) -> None:
+        if not hasattr(self, "quick_art_results"):
+            return
+        for child in self.quick_art_results.winfo_children():
+            child.destroy()
+
+        if self.art_search_in_progress:
+            tk.Label(
+                self.quick_art_results,
+                text="Pulling art suggestions...",
+                font=("Segoe UI", 9),
+                fg=PALETTE["soft"],
+                bg=PALETTE["panel"],
+            ).pack(anchor="w")
+            return
+
+        if not self.art_search_results:
+            tk.Label(
+                self.quick_art_results,
+                text="Search results will appear here. Applying one uses it as the large Discord image URL.",
+                font=("Segoe UI", 9),
+                fg=PALETTE["soft"],
+                bg=PALETTE["panel"],
+                justify="left",
+                wraplength=620,
+            ).pack(anchor="w")
+            return
+
+        for index, result in enumerate(self.art_search_results):
+            card = tk.Frame(
+                self.quick_art_results,
+                bg=PALETTE["panel_alt"],
+                highlightbackground=PALETTE["line"],
+                highlightthickness=1,
+                padx=12,
+                pady=12,
+            )
+            card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=(0, 10), pady=(0, 10))
+            self.quick_art_results.grid_columnconfigure(index % 2, weight=1)
+
+            preview = tk.Label(
+                card,
+                text="Loading\npreview",
+                font=("Segoe UI", 9),
+                fg=PALETTE["soft"],
+                bg=PALETTE["input"],
+                width=12,
+                height=6,
+                justify="center",
+            )
+            preview.pack(side="left", padx=(0, 12))
+            self._load_remote_preview_async(preview, result.thumbnail_url or result.asset_url)
+
+            body = tk.Frame(card, bg=PALETTE["panel_alt"])
+            body.pack(side="left", fill="both", expand=True)
+            tk.Label(
+                body,
+                text=result.title[:56],
+                font=("Segoe UI Semibold", 10),
+                fg=PALETTE["text"],
+                bg=PALETTE["panel_alt"],
+                justify="left",
+                wraplength=210,
+            ).pack(anchor="w")
+            tk.Label(
+                body,
+                text=f"{result.provider} | {result.creator[:36]} | {result.license_label}",
+                font=("Segoe UI", 9),
+                fg=PALETTE["muted"],
+                bg=PALETTE["panel_alt"],
+                justify="left",
+                wraplength=210,
+            ).pack(anchor="w", pady=(4, 10))
+            if result.match_note:
+                tk.Label(
+                    body,
+                    text=f'Matched via "{result.match_note[:34]}"',
+                    font=("Segoe UI", 8),
+                    fg=PALETTE["soft"],
+                    bg=PALETTE["panel_alt"],
+                    justify="left",
+                    wraplength=210,
+                ).pack(anchor="w", pady=(0, 10))
+
+            actions = tk.Frame(body, bg=PALETTE["panel_alt"])
+            actions.pack(anchor="w")
+            self._action_button(
+                actions,
+                "Use For Art",
+                lambda item=result: self.apply_art_search_result(item),
+                PALETTE["gold"],
+                PALETTE["ink"],
+            ).pack(side="left")
+            self._action_button(
+                actions,
+                "Open Source",
+                lambda url=result.source_url: webbrowser.open(url),
+                PALETTE["panel_soft"],
+                PALETTE["text"],
+            ).pack(side="left", padx=(8, 0))
+
+    def apply_art_search_result(self, result: ArtSearchResult) -> None:
+        self.manual_large_image_var.set(result.asset_url)
+        self.manual_large_text_var.set(result.title[:128])
+        if not self.large_url_var.get().strip() and result.source_url:
+            self.large_url_var.set(result.source_url[:512])
+        self._flash_status(PALETTE["mint"], f'Applied "{result.title[:36]}" as the large activity image.')
+
+    def clear_manual_large_art(self) -> None:
+        self.manual_large_image_var.set("")
+        self.manual_large_text_var.set("")
+        self._flash_status(PALETTE["gold"], "Reverted to PresenceCast's default activity art.")
+
+    def _load_remote_preview_async(self, label: tk.Label, url: str) -> None:
+        if not url:
+            label.configure(text="No\npreview")
+            return
+        cache_key = (url, 84, 84)
+        cached = self.remote_preview_cache.get(cache_key)
+        if cached is not None:
+            label.configure(image=cached, text="")
+            label.image = cached  # type: ignore[attr-defined]
+            return
+
+        def worker() -> None:
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": f"PresenceCast/{APP_VERSION}"})
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    payload = response.read()
+                image = Image.open(BytesIO(payload)).convert("RGBA")
+                image.thumbnail((84, 84), Image.Resampling.LANCZOS)
+                canvas = Image.new("RGBA", (84, 84), (0, 0, 0, 0))
+                offset_x = max(0, (84 - image.width) // 2)
+                offset_y = max(0, (84 - image.height) // 2)
+                canvas.paste(image, (offset_x, offset_y), image)
+                self.root.after(0, lambda: self._finish_remote_preview(cache_key, label, canvas))
+            except Exception:
+                self.root.after(0, lambda: self._finish_remote_preview(cache_key, label, None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_remote_preview(
+        self,
+        cache_key: tuple[str, int, int],
+        label: tk.Label,
+        image: Image.Image | None,
+    ) -> None:
+        if not label.winfo_exists():
+            return
+        if image is None:
+            label.configure(text="Preview\nunavailable")
+            return
+        photo = ImageTk.PhotoImage(image)
+        self.remote_preview_cache[cache_key] = photo
+        label.configure(image=photo, text="")
+        label.image = photo  # type: ignore[attr-defined]
+
     def _on_content_configure(self, _event: tk.Event) -> None:
         self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
 
@@ -2343,6 +3085,12 @@ class PresenceApp:
         if not url.lower().startswith(("https://", "http://")):
             raise ValueError(f"{field_name} must start with https:// or http://.")
         return url[:512]
+
+    def _trim_asset_reference(self, value: str) -> str:
+        trimmed = value.strip()
+        if trimmed.lower().startswith(("https://", "http://")):
+            return trimmed[:512]
+        return trimmed[:128]
 
     def _collect_buttons(self, strict: bool = True) -> list[dict[str, str]]:
         buttons = []
@@ -2673,12 +3421,13 @@ class PresenceApp:
         return secrets.token_urlsafe(size)[: max(10, size + 4)]
 
     def _build_payload(self) -> dict[str, object]:
+        self.client_id = self.client_id_var.get().strip()
         activity_name = self.name_var.get().strip()
         details = self.details_var.get().strip()
         state = self.state_var.get().strip()
 
         if not self.client_id.isdigit():
-            raise ValueError("config.json must contain a valid numeric Discord Application ID.")
+            raise ValueError("Enter a valid numeric Discord Application ID in the Discord Setup section.")
         if not activity_name:
             raise ValueError("Type an activity name before casting presence.")
 
@@ -2692,9 +3441,19 @@ class PresenceApp:
         end_time = None
         timer_mode = self.timer_mode_var.get()
         if timer_mode == "Elapsed":
-            start_time = int(time.time())
+            offset_minutes = self._triplet_total_minutes(
+                self.elapsed_days_var,
+                self.elapsed_hours_var,
+                self.elapsed_minutes_var,
+            )
+            start_time = int(time.time()) - (offset_minutes * 60)
         elif timer_mode == "Countdown":
-            minutes = self._safe_positive_int(self.duration_var.get().strip(), default=45, minimum=1, maximum=1440)
+            minutes = self._triplet_total_minutes(
+                self.countdown_days_var,
+                self.countdown_hours_var,
+                self.countdown_minutes_var,
+                minimum=1,
+            )
             end_time = int(time.time()) + minutes * 60
 
         party_id = None
@@ -2747,7 +3506,7 @@ class PresenceApp:
             self._flash_status(PALETTE["rose"], "Discord connection failed.")
             messagebox.showerror(
                 "Discord RPC Error",
-                "Discord must be open on your PC, and your Application ID in config.json must be valid.\n\n"
+                "Discord must be open on your PC, and your Application ID in the Discord Setup section must be valid.\n\n"
                 f"Error: {exc}",
             )
 

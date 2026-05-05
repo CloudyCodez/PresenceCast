@@ -44,7 +44,7 @@ jobs:
             "playing_image_key": "chibi_cloud_playing",
             "playing_image_text": "PresenceCast | Playing",
             "listening_image_key": "chibi_cloud_listening",
-            "listening_image_text": "PresenceCast | Listening",
+            "listening_image_text": "Listening",
             "watching_image_key": "chibi_cloud_watching",
             "watching_image_text": "PresenceCast | Watching",
             "competing_image_key": "",
