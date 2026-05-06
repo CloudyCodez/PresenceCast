@@ -1,3 +1,5 @@
+Join the Server: https://discord.gg/82Mwq8Wj
+
 # PresenceCast
 
 PresenceCast is a Windows desktop utility for shaping Discord Rich Presence with a cinematic studio workflow. PresenceCast 2.0 expands the original utility into a richer desktop experience for crafting narrative, timing, party state, art direction, and clickable surfaces.
